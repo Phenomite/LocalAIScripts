@@ -148,6 +148,7 @@ try {
 
     $StrataLocalDir = Join-Path $env:LOCALAPPDATA "Strata"
     $LaunchDir      = Join-Path $StrataLocalDir "launch"
+    $OmpConfigPath  = Join-Path $env:USERPROFILE ".omp\agent\config.yml"
     $TempLaunchLog  = Join-Path $env:TEMP "strata_gui_launch.log"
     $TempCmdLog     = Join-Path $env:TEMP "strata_gui_cmd.log"
 
@@ -175,6 +176,17 @@ try {
                 if ($json -and $json.model -and -not $ModelList.Contains([string]$json.model)) { [void]$ModelList.Add([string]$json.model) }
             } catch {}
         }
+    }
+
+    # Read current defaultThinkingLevel from ~/.omp/agent/config.yml if present
+    $InitialThinking = "medium"
+    if (Test-Path -LiteralPath $OmpConfigPath) {
+        try {
+            $cfgRaw = Get-Content -LiteralPath $OmpConfigPath -Raw -ErrorAction SilentlyContinue
+            if ($cfgRaw -match '(?m)^\s*defaultThinkingLevel:\s*([a-zA-Z0-9_-]+)') {
+                $InitialThinking = $Matches[1].Trim().ToLower()
+            }
+        } catch {}
     }
 
     $BgDark   = [System.Drawing.Color]::FromArgb(24, 24, 28)
@@ -225,28 +237,36 @@ try {
 
     [void](Add-Lbl $CfgPanel "Model (--model):" 16 12)
     $CmbModel = New-Object System.Windows.Forms.ComboBox
-    $CmbModel.Location = New-Object System.Drawing.Point(16, 34); $CmbModel.Size = New-Object System.Drawing.Size(210, 28)
+    $CmbModel.Location = New-Object System.Drawing.Point(16, 34); $CmbModel.Size = New-Object System.Drawing.Size(185, 28)
     $CmbModel.BackColor = $BgInput; $CmbModel.ForeColor = $FgText; $CmbModel.FlatStyle = "Flat"
     $CmbModel.Items.AddRange($ModelList.ToArray()); $CmbModel.Text = "ist-das-coder"
     $CfgPanel.Controls.Add($CmbModel)
 
-    [void](Add-Lbl $CfgPanel "Context:" 242 12)
+    [void](Add-Lbl $CfgPanel "Context:" 213 12)
     $CmbCtx = New-Object System.Windows.Forms.ComboBox
-    $CmbCtx.Location = New-Object System.Drawing.Point(242, 34); $CmbCtx.Size = New-Object System.Drawing.Size(100, 28)
+    $CmbCtx.Location = New-Object System.Drawing.Point(213, 34); $CmbCtx.Size = New-Object System.Drawing.Size(85, 28)
     $CmbCtx.BackColor = $BgInput; $CmbCtx.ForeColor = $FgText; $CmbCtx.FlatStyle = "Flat"
     [void]$CmbCtx.Items.AddRange(@("256k", "128k", "64k", "32k", "16k", "8k")); $CmbCtx.Text = "256k"
     $CfgPanel.Controls.Add($CmbCtx)
 
-    [void](Add-Lbl $CfgPanel "Speed:" 358 12)
+    [void](Add-Lbl $CfgPanel "Speed:" 310 12)
     $CmbSpeed = New-Object System.Windows.Forms.ComboBox
-    $CmbSpeed.Location = New-Object System.Drawing.Point(358, 34); $CmbSpeed.Size = New-Object System.Drawing.Size(100, 28)
+    $CmbSpeed.Location = New-Object System.Drawing.Point(310, 34); $CmbSpeed.Size = New-Object System.Drawing.Size(85, 28)
     $CmbSpeed.BackColor = $BgInput; $CmbSpeed.ForeColor = $FgText; $CmbSpeed.FlatStyle = "Flat"; $CmbSpeed.DropDownStyle = "DropDownList"
     [void]$CmbSpeed.Items.AddRange(@("full", "faster")); $CmbSpeed.SelectedItem = "full"
     $CfgPanel.Controls.Add($CmbSpeed)
 
-    [void](Add-Lbl $CfgPanel "Preset Name (--save-preset):" 474 12)
+    [void](Add-Lbl $CfgPanel "OMP Thinking:" 407 12)
+    $CmbThinking = New-Object System.Windows.Forms.ComboBox
+    $CmbThinking.Location = New-Object System.Drawing.Point(407, 34); $CmbThinking.Size = New-Object System.Drawing.Size(105, 28)
+    $CmbThinking.BackColor = $BgInput; $CmbThinking.ForeColor = $FgText; $CmbThinking.FlatStyle = "Flat"; $CmbThinking.DropDownStyle = "DropDownList"
+    [void]$CmbThinking.Items.AddRange(@("auto", "off", "minimal", "low", "medium", "high", "xhigh", "max"))
+    if ($CmbThinking.Items.Contains($InitialThinking)) { $CmbThinking.SelectedItem = $InitialThinking } else { $CmbThinking.SelectedItem = "medium" }
+    $CfgPanel.Controls.Add($CmbThinking)
+
+    [void](Add-Lbl $CfgPanel "Preset Name (--save-preset):" 524 12)
     $TxtPreset = New-Object System.Windows.Forms.TextBox
-    $TxtPreset.Location = New-Object System.Drawing.Point(474, 34); $TxtPreset.Size = New-Object System.Drawing.Size(310, 28)
+    $TxtPreset.Location = New-Object System.Drawing.Point(524, 34); $TxtPreset.Size = New-Object System.Drawing.Size(260, 28)
     $TxtPreset.BackColor = $BgInput; $TxtPreset.ForeColor = $FgText; $TxtPreset.BorderStyle = "FixedSingle"; $TxtPreset.Text = "ds41-coder-256"
     $CfgPanel.Controls.Add($TxtPreset)
 
@@ -282,6 +302,37 @@ try {
         $TxtLog.ScrollToCaret()
         Write-DebugFile $msg
     }
+
+    # Updates defaultThinkingLevel in ~/.omp/agent/config.yml
+    function Set-OmpThinkingLevel([string]$Level) {
+        if (-not $Level) { return }
+        try {
+            $ompAgentDir = Split-Path -Parent $OmpConfigPath
+            if (-not (Test-Path -LiteralPath $ompAgentDir)) {
+                New-Item -Path $ompAgentDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
+            }
+            if (Test-Path -LiteralPath $OmpConfigPath) {
+                $content = [System.IO.File]::ReadAllText($OmpConfigPath, [System.Text.Encoding]::UTF8)
+                if ($content -match '(?m)^(\s*defaultThinkingLevel:\s*).*$') {
+                    $content = [regex]::Replace($content, '(?m)^(\s*defaultThinkingLevel:\s*).*$', "`${1}$Level")
+                } else {
+                    $content = $content.TrimEnd() + "`r`ndefaultThinkingLevel: $Level`r`n"
+                }
+                [System.IO.File]::WriteAllText($OmpConfigPath, $content, [System.Text.Encoding]::UTF8)
+                Write-GuiLog "Updated ~/.omp/agent/config.yml -> defaultThinkingLevel: $Level"
+            } else {
+                [System.IO.File]::WriteAllText($OmpConfigPath, "defaultThinkingLevel: $Level`r`n", [System.Text.Encoding]::UTF8)
+                Write-GuiLog "Created ~/.omp/agent/config.yml with defaultThinkingLevel: $Level"
+            }
+        } catch {
+            Write-GuiLog "WARNING: Could not update config.yml thinking level: $($_.Exception.Message)"
+        }
+    }
+
+    $CmbThinking.Add_SelectedIndexChanged({
+        $lvl = [string]$CmbThinking.SelectedItem
+        if ($lvl) { Set-OmpThinkingLevel -Level $lvl }
+    })
 
     function Stop-ProcessTree($Proc) {
         if ($Proc) {
@@ -416,18 +467,21 @@ try {
     $BtnWireOmp.Add_Click({
         try {
             Stop-ProcessTree $script:ActionProc
-            Write-GuiLog "Running: strata connect omp --write && strata connect omp --check"
-            $ompCmdChain = "call strata connect omp --write >> `"$TempCmdLog`" 2>&1 & call strata connect omp --check >> `"$TempCmdLog`" 2>&1"
+            $lvl = [string]$CmbThinking.SelectedItem
+            Write-GuiLog "Running: strata connect omp --write && omp config set defaultThinkingLevel $lvl && strata connect omp --check"
+            $ompCmdChain = "call strata connect omp --write >> `"$TempCmdLog`" 2>&1 & call omp config set defaultThinkingLevel $lvl >> `"$TempCmdLog`" 2>&1 & call strata connect omp --check >> `"$TempCmdLog`" 2>&1"
             $script:ActionProc = Start-InteractiveCmd -CmdChain $ompCmdChain -LogFile $TempCmdLog -PosRef ([ref]$script:CmdLogPos)
         } catch { Write-GuiLog "ERROR syncing omp: $($_.Exception.Message)" }
     })
 
     $BtnRunOmp.Add_Click({
         try {
+            $lvl = [string]$CmbThinking.SelectedItem
+            if ($lvl) { Set-OmpThinkingLevel -Level $lvl }
             $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
             $dlg.Description = "Select workspace folder to launch omp in (or Cancel for user home):"
             $workDir = if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dlg.SelectedPath } else { $env:USERPROFILE }
-            Write-GuiLog "Launching omp in folder: $workDir"
+            Write-GuiLog "Launching omp (defaultThinkingLevel: $lvl) in folder: $workDir"
             Start-Process -FilePath "cmd.exe" -WorkingDirectory $workDir -ArgumentList "/k omp"
         } catch { Write-GuiLog "ERROR launching omp: $($_.Exception.Message)" }
     })
