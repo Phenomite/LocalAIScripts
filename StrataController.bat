@@ -350,13 +350,14 @@ try {
     $CmbCtx.Add_SelectedIndexChanged($SyncModelSelection); $CmbCtx.Add_TextChanged($SyncModelSelection)
     & $SyncModelSelection
 
-    $BtnGrid    = New-Grid $Form 56 @(17, 18, 15, 15, 16, 19) @(100) $BgDark @(12, 2, 12, 8)
+    $BtnGrid    = New-Grid $Form 56 @(15, 16, 13, 14, 13, 14, 15) @(100) $BgDark @(12, 2, 12, 8)
     $BtnStart   = Add-Btn $BtnGrid "Start Engine"    0 ([Drawing.Color]::FromArgb(35,134,54))  $FontBold
     $BtnStop    = Add-Btn $BtnGrid "Stop (Graceful)" 1 ([Drawing.Color]::FromArgb(180,105,14)) $FontBold
     $BtnKill    = Add-Btn $BtnGrid "Force Kill"      2 ([Drawing.Color]::FromArgb(190,40,40))  $FontBold
-    $BtnWireOmp = Add-Btn $BtnGrid "Sync omp"        3 ([Drawing.Color]::FromArgb(45,105,190))
-    $BtnRunOmp  = Add-Btn $BtnGrid "Launch omp"      4 $BgPanel
-    $BtnOpenLog = Add-Btn $BtnGrid "Open Debug Log"  5 $BgPanel
+    $BtnTune    = Add-Btn $BtnGrid "Tune Model"      3 ([Drawing.Color]::FromArgb(115,75,180)) $FontBold
+    $BtnWireOmp = Add-Btn $BtnGrid "Sync omp"        4 ([Drawing.Color]::FromArgb(45,105,190))
+    $BtnRunOmp  = Add-Btn $BtnGrid "Launch omp"      5 $BgPanel
+    $BtnOpenLog = Add-Btn $BtnGrid "Open Debug Log"  6 $BgPanel
     $BtnGrid.ResumeLayout($false)
 
     $LogPanel = New-Object Windows.Forms.Panel -Property @{ Dock = "Fill"; Padding = New-Object Windows.Forms.Padding(16, 0, 16, 16) }
@@ -458,7 +459,7 @@ try {
         foreach ($v in $script:ModelMap.Values) { Write-GuiLog "Ready Model: $($v.FamilyTitle) [--family $($v.Family) --model $($v.Model)]" }
     } else { Write-GuiLog "WARNING: No downloaded/prepared Strata models detected. Run 'strata launch' in terminal to download one." }
 
-    $BtnStart.Add_Click({
+    function Invoke-StrataLaunch([string]$ExtraArgs = "", [string]$ActionLabel = "Starting") {
         $sel = if ($CmbModel.SelectedItem) { $script:ModelMap[[string]$CmbModel.SelectedItem] } else { $null }
         $ctx = $CmbCtx.Text.Trim(); $preset = $TxtPreset.Text.Trim()
         if (-not $sel -or -not $preset) { [Windows.Forms.MessageBox]::Show($Form, "Select a downloaded ready model and preset name first.", "Missing Input") | Out-Null; return }
@@ -467,9 +468,21 @@ try {
         if ([IO.File]::Exists($script:CurrentEngineLog)) { try { [IO.File]::WriteAllText($script:CurrentEngineLog, "", $Utf8NoBom) } catch {} }
         $script:EngineLogPos = 0
         $spdArg = if ($sel.Family -eq "deepseek41") { " --speed `"$($CmbSpeed.Text)`"" } else { "" }
-        $launchArgs = "--family `"$($sel.Family)`" --model `"$($sel.Model)`" --context `"$ctx`"$spdArg --save-preset `"$preset`" --no-tui"
-        Write-GuiLog "Starting [$($sel.FamilyTitle)]: strata launch $launchArgs"
+        $launchArgs = "--family `"$($sel.Family)`" --model `"$($sel.Model)`" --context `"$ctx`"$spdArg --save-preset `"$preset`"$ExtraArgs --no-tui"
+        Write-GuiLog "$ActionLabel [$($sel.FamilyTitle)]: strata launch $launchArgs"
         $script:LaunchProc = Start-InteractiveCmd "call strata launch $launchArgs > `"$TempLaunchLog`" 2>&1" $TempLaunchLog ([ref]$script:LaunchLogPos)
+    }
+
+    $BtnStart.Add_Click({ Invoke-StrataLaunch })
+
+    $BtnTune.Add_Click({
+        $sel = if ($CmbModel.SelectedItem) { $script:ModelMap[[string]$CmbModel.SelectedItem] } else { $null }
+        $preset = $TxtPreset.Text.Trim()
+        if (-not $sel -or -not $preset) { [Windows.Forms.MessageBox]::Show($Form, "Select a downloaded ready model and preset name first.", "Missing Input") | Out-Null; return }
+        $ans = [Windows.Forms.MessageBox]::Show($Form, "Tune [$($sel.FamilyTitle)] ($($sel.Model)) for this PC and save to preset '$preset'?`n`nYES = Quick tune (~20 min)`nNO = Thorough tune (up to 2 hours)`nCANCEL = Abort", "Tune Model", "YesNoCancel", "Question")
+        if ($ans -eq "Cancel") { return }
+        $mode = if ($ans -eq "Yes") { "quick" } else { "thorough" }
+        Invoke-StrataLaunch " --tune $mode --retune --restart" "Tuning ($mode)"
     })
 
     $BtnStop.Add_Click({
