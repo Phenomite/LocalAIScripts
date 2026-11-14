@@ -1,7 +1,6 @@
 ---
 description: Core security and shell execution invariants
 alwaysApply: true
-scope: [thinking, text]
 ---
 # Security
 
