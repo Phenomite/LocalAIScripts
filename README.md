@@ -1,11 +1,17 @@
 # Phenom LocalLLM
 
-Runs on RTX 3060 or better. Needs ~60 Gb RAM.
+Needs RTX 3060 or better, ~60 Gb RAM, and PCIe 4+ SSD.
 
-* Install
-  * 1-INSTALL-OMP.bat
-  * `2-INSTALL-STRATA.bat` - pick `BOTH` for easiest
-* Run Strata GUI
-* Model examples for 12Gb VRAM:
-  * DeepSeek 4.1 Flash 1017 -> `IQ2_XXS`
-  * Qwen3.8 Flash Next -> `IQ3_S`
+1. Install:
+    - `1-INSTALL-OMP.bat`;
+    - `2-INSTALL-STRATA.bat` - pick `BOTH` for easiest next steps.
+2. Run Strata GUI.
+3. Pick Best Model (examples for 12 Gb VRAM) (or swap for ablated `~/Documents/Strata/Models/`):
+    - DeepSeek 4.1 Flash 1017 -> `IQ2_XXS` 
+    - Qwen3.8 Flash Next -> `IQ3_S`
+4. Start `StrataController.bat`
+    - `Start Model`
+    - `Sync OMP`
+    - `Start OMP`
+5. ???
+6. Profit.
