@@ -2,8 +2,8 @@
 setlocal EnableExtensions
 pushd "%~dp0"
 
-if not exist "StrataController.cs" (
-    echo [ERROR] "StrataController.cs" not found next to this script.
+if not exist "StrataController/StrataController.cs" (
+    echo [ERROR] "StrataController.cs" not found in StrataController/
     pause & exit /b 1
 )
 
@@ -14,9 +14,9 @@ if not exist "%CSC%" (
     pause & exit /b 1
 )
 
-"%CSC%" /nologo /utf8output /target:winexe /platform:anycpu /optimize+ /out:"StrataController.exe" ^
-    /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll /r:System.Management.dll ^
-    "StrataController.cs"
+"%CSC%" /nologo /t:winexe /platform:x64 /optimize+ /out:"StrataController.exe" ^
+    /win32icon:StrataController\app.ico /win32manifest:StrataController\app.manifest /r:System.Web.Extensions.dll ^
+    "StrataController\StrataController.cs"
 
 if errorlevel 1 (
     echo.
