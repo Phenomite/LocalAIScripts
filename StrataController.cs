@@ -30,6 +30,9 @@ namespace StrataControllerApp
     {
         public ModelInfo Info;
         public string Level;
+        public string ConfigPath;
+        public string OriginalConfigText;
+        public bool HadOriginalConfig;
     }
 
     internal static class Program
@@ -143,6 +146,7 @@ namespace StrataControllerApp
     internal sealed class StrataControllerForm : Form
     {
         private static readonly string[] EngineProcNames = { "strata-dsv41", "strata-server", "strata" };
+        private static readonly string[] KillProcNames   = { "strata-dsv41", "strata-server", "strata-vision", "strata" };
         private static readonly Dictionary<string, string> FamilyTitles = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             { "deepseek41", "DeepSeek V4.1-Flash" },
@@ -176,8 +180,10 @@ namespace StrataControllerApp
         private readonly List<string> modelKeys = new List<string>();
         private string initialThinking = "medium";
 
+        private ToolTip toolTip;
         private Label lblStatus, lblProcInfo;
-        private ComboBox cmbModel, cmbCtx, cmbSpeed, cmbThinking;
+        private ComboBox cmbModel, cmbCtx, cmbSpeed, cmbPleIo, cmbVramReserve, cmbThinking;
+        private CheckBox chkOmpContinue;
         private TextBox txtPreset, txtLog;
         private Button btnStart, btnStop, btnKill, btnTune, btnWireOmp, btnRunOmp, btnOpenLog;
         private Timer pollTimer;
@@ -601,16 +607,37 @@ namespace StrataControllerApp
             {
                 try
                 {
-                    string cfgRaw = File.ReadAllText(cfgPath, Encoding.UTF8);
-                    Match mRole = Regex.Match(
-                        cfgRaw,
-                        @"^modelRoles:\s*(?:#.*)?\r?\n(?:[ \t]*(?:#[^\r\n]*)?\r?\n|[ \t]+[^\r\n]*\r?\n)*?[ \t]+default:\s*strata/[^:\s#]+:(off|minimal|low|medium|high|xhigh|max|auto)\b",
-                        RegexOptions.Multiline | RegexOptions.IgnoreCase);
-                    if (mRole.Success) found = mRole.Groups[1].Value.ToLowerInvariant();
-                    else
+                    List<string> lines = new List<string>(Regex.Split(File.ReadAllText(cfgPath, Encoding.UTF8), @"\r?\n"));
+                    int mrIdx = -1;
+                    for (int i = 0; i < lines.Count; i++)
                     {
-                        Match mDtl = Regex.Match(cfgRaw, @"^\s*defaultThinkingLevel:\s*([a-zA-Z0-9_-]+)", RegexOptions.Multiline);
-                        if (mDtl.Success) found = mDtl.Groups[1].Value.ToLowerInvariant();
+                        if (Regex.IsMatch(lines[i], @"^modelRoles:\s*(?:#.*)?$")) { mrIdx = i; break; }
+                    }
+                    if (mrIdx >= 0)
+                    {
+                        int mrEnd = FindBlockEnd(lines, mrIdx, 0);
+                        for (int i = mrIdx + 1; i < mrEnd; i++)
+                        {
+                            Match dm = Regex.Match(lines[i], @"^[ \t]+default:\s*([""']?)[^\s#:""']+/[^\s#:""']+:(off|minimal|low|medium|high|xhigh|max|auto)\1\s*(?:#.*)?$", RegexOptions.IgnoreCase);
+                            if (dm.Success)
+                            {
+                                found = dm.Groups[2].Value.ToLowerInvariant();
+                                break;
+                            }
+                        }
+                    }
+
+                    if (string.IsNullOrEmpty(found))
+                    {
+                        foreach (string ln in lines)
+                        {
+                            Match mDtl = Regex.Match(ln, @"^defaultThinkingLevel:\s*([a-zA-Z0-9_-]+)");
+                            if (mDtl.Success)
+                            {
+                                found = mDtl.Groups[1].Value.ToLowerInvariant();
+                                break;
+                            }
+                        }
                     }
                 }
                 catch { }
@@ -639,32 +666,32 @@ namespace StrataControllerApp
         private void BuildUi()
         {
             Text = "Strata Engine Controller";
-            Size = new Size(860, 620);
-            MinimumSize = new Size(780, 500);
+            Size = new Size(920, 660);
+            MinimumSize = new Size(800, 520);
             StartPosition = FormStartPosition.CenterScreen;
             BackColor = BgDark;
             ForeColor = FgText;
             Font = fontUI;
             AutoScaleMode = AutoScaleMode.Dpi;
 
+            toolTip = new ToolTip { AutoPopDelay = 12000, InitialDelay = 400, ReshowDelay = 200 };
+
             SuspendLayout();
 
-            TableLayoutPanel statusGrid = NewGrid(46, new[] { 0f, 100f }, new[] { 100f }, BgPanel, new Padding(12, 6, 12, 6));
+            TableLayoutPanel statusGrid = NewGrid(44, new[] { 0f, 100f }, new[] { 100f }, BgPanel, new Padding(12, 6, 12, 6));
             lblStatus   = AddLbl(statusGrid, "[CHECKING ENGINE...]", 0, 0, fontStatus, FgText, true);
             lblProcInfo = AddLbl(statusGrid, "Endpoint: http://127.0.0.1:8080/v1", 1, 0, fontUI, FgMuted, false);
             statusGrid.ResumeLayout(false);
 
-            TableLayoutPanel inputGrid = NewGrid(74, new[] { 36f, 11f, 13f, 15f, 25f }, new[] { 42f, 58f }, BgDark, new Padding(12, 6, 12, 2));
-            AddLbl(inputGrid, "Model:", 0, 0, fontBold, FgText, false);
-            AddLbl(inputGrid, "Context:", 1, 0, fontUI, FgText, false);
-            AddLbl(inputGrid, "Speed (DS41):", 2, 0, fontUI, FgText, false);
-            AddLbl(inputGrid, "OMP Thinking:", 3, 0, fontUI, FgText, false);
-            AddLbl(inputGrid, "Preset (--save-preset):", 4, 0, fontUI, FgText, false);
+            TableLayoutPanel inputRow1 = NewGrid(58, new[] { 42f, 13f, 15f, 30f }, new[] { 42f, 58f }, BgDark, new Padding(12, 6, 12, 2));
+            AddLbl(inputRow1, "Model:", 0, 0, fontBold, FgText, false);
+            AddLbl(inputRow1, "Context:", 1, 0, fontUI, FgText, false);
+            AddLbl(inputRow1, "Speed (DS41):", 2, 0, fontUI, FgText, false);
+            AddLbl(inputRow1, "Preset (--save-preset):", 3, 0, fontUI, FgText, false);
 
-            cmbModel    = AddCmb(inputGrid, 0, modelKeys.ToArray(), null, ComboBoxStyle.DropDownList);
-            cmbCtx      = AddCmb(inputGrid, 1, new[] { "256k", "128k", "64k", "32k", "16k", "8k" }, "256k", ComboBoxStyle.DropDown);
-            cmbSpeed    = AddCmb(inputGrid, 2, new[] { "full", "faster" }, "full", ComboBoxStyle.DropDownList);
-            cmbThinking = AddCmb(inputGrid, 3, new string[0], null, ComboBoxStyle.DropDownList);
+            cmbModel = AddCmb(inputRow1, 0, modelKeys.ToArray(), null, ComboBoxStyle.DropDownList);
+            cmbCtx   = AddCmb(inputRow1, 1, new[] { "256k", "128k", "64k", "32k", "16k", "8k" }, "256k", ComboBoxStyle.DropDown);
+            cmbSpeed = AddCmb(inputRow1, 2, new[] { "full", "faster" }, "full", ComboBoxStyle.DropDownList);
 
             txtPreset = new TextBox
             {
@@ -674,10 +701,33 @@ namespace StrataControllerApp
                 BorderStyle = BorderStyle.FixedSingle,
                 Margin = new Padding(3, 2, 3, 2)
             };
-            inputGrid.Controls.Add(txtPreset, 4, 1);
-            inputGrid.ResumeLayout(false);
+            inputRow1.Controls.Add(txtPreset, 3, 1);
+            inputRow1.ResumeLayout(false);
 
-            TableLayoutPanel btnGrid = NewGrid(56, new[] { 15f, 16f, 13f, 14f, 13f, 14f, 15f }, new[] { 100f }, BgDark, new Padding(12, 2, 12, 8));
+            TableLayoutPanel inputRow2 = NewGrid(58, new[] { 18f, 22f, 24f, 36f }, new[] { 42f, 58f }, BgDark, new Padding(12, 2, 12, 4));
+            AddLbl(inputRow2, "PLE I/O:", 0, 0, fontUI, FgText, false);
+            AddLbl(inputRow2, "VRAM Reserve (MiB):", 1, 0, fontUI, FgText, false);
+            AddLbl(inputRow2, "OMP Thinking:", 2, 0, fontUI, FgText, false);
+            AddLbl(inputRow2, "OMP Launch Options:", 3, 0, fontUI, FgText, false);
+
+            cmbPleIo       = AddCmb(inputRow2, 0, new[] { "auto", "direct", "ram" }, "auto", ComboBoxStyle.DropDownList);
+            cmbVramReserve = AddCmb(inputRow2, 1, new[] { "auto", "1088", "1280", "1536", "2048" }, "auto", ComboBoxStyle.DropDown);
+            cmbThinking    = AddCmb(inputRow2, 2, new string[0], null, ComboBoxStyle.DropDownList);
+
+            chkOmpContinue = new CheckBox
+            {
+                Text = "Continue last session (-c)",
+                Checked = false,
+                Dock = DockStyle.Fill,
+                AutoEllipsis = true,
+                ForeColor = FgText,
+                BackColor = BgDark,
+                Margin = new Padding(6, 2, 3, 2)
+            };
+            inputRow2.Controls.Add(chkOmpContinue, 3, 1);
+            inputRow2.ResumeLayout(false);
+
+            TableLayoutPanel btnGrid = NewGrid(50, new[] { 14f, 16f, 13f, 14f, 13f, 14f, 16f }, new[] { 100f }, BgDark, new Padding(12, 2, 12, 8));
             btnStart   = AddBtn(btnGrid, "Start Engine",    0, Color.FromArgb(35, 134, 54),  fontBold);
             btnStop    = AddBtn(btnGrid, "Stop (Graceful)", 1, Color.FromArgb(180, 105, 14), fontBold);
             btnKill    = AddBtn(btnGrid, "Force Kill",      2, Color.FromArgb(190, 40, 40),  fontBold);
@@ -687,7 +737,7 @@ namespace StrataControllerApp
             btnOpenLog = AddBtn(btnGrid, "Open Debug Log",  6, BgPanel,                      fontUI);
             btnGrid.ResumeLayout(false);
 
-            Panel logPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16, 0, 16, 16) };
+            Panel logPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(12, 4, 12, 12) };
             Controls.Add(logPanel);
             logPanel.BringToFront();
 
@@ -704,6 +754,11 @@ namespace StrataControllerApp
                 ForeColor = Color.FromArgb(200, 215, 225)
             };
             logPanel.Controls.Add(txtLog);
+
+            toolTip.SetToolTip(cmbPleIo, "direct: keeps 26.8 GiB PLE table on NVMe SSD (prevents startup/tuning RAM spikes via STRATA_PLE_AUTO_RAM=0).\nauto: lets Strata lock PLE in RAM if free RAM allows.\nram: forces PLE lock in RAM.");
+            toolTip.SetToolTip(cmbVramReserve, "MiB kept free on GPU (--vram-reserve-mib). Recommended 1280-1536 on 12 GB Windows cards to avoid WDDM paging (#2065).");
+            toolTip.SetToolTip(cmbThinking, "Updates modelRoles.default :level suffix and defaultThinkingLevel in ~/.omp/agent/config.yml without overwriting other keys.");
+            toolTip.SetToolTip(chkOmpContinue, "When unchecked (recommended), Launch omp starts a fresh session using --thinking. When checked, adds -c to resume the previous session.");
 
             ResumeLayout(true);
             SyncModelSelection();
@@ -839,6 +894,34 @@ namespace StrataControllerApp
             }
         }
 
+        private bool TryBuildEngineOptionArgs(out string optArgs, out string errorMsg)
+        {
+            StringBuilder sb = new StringBuilder();
+            errorMsg = null;
+
+            string pleMode = cmbPleIo.SelectedItem != null ? cmbPleIo.SelectedItem.ToString() : "direct";
+            if (string.Equals(pleMode, "direct", StringComparison.OrdinalIgnoreCase))
+                sb.Append(" --set STRATA_PLE_AUTO_RAM=0 --set ple-io=direct");
+            else if (string.Equals(pleMode, "ram", StringComparison.OrdinalIgnoreCase))
+                sb.Append(" --set ple-io=ram");
+
+            string vramRaw = (cmbVramReserve.Text ?? "").Trim();
+            if (!string.IsNullOrEmpty(vramRaw) && !string.Equals(vramRaw, "auto", StringComparison.OrdinalIgnoreCase))
+            {
+                int vramMib;
+                if (!int.TryParse(vramRaw, out vramMib) || vramMib < 0)
+                {
+                    optArgs = "";
+                    errorMsg = "VRAM Reserve must be 'auto' or a non-negative integer (MiB).";
+                    return false;
+                }
+                sb.Append(" --set vram-reserve-mib=").Append(vramMib);
+            }
+
+            optArgs = sb.ToString();
+            return true;
+        }
+
         private void WireEvents()
         {
             cmbModel.SelectedIndexChanged += delegate { SyncModelSelection(); };
@@ -848,10 +931,10 @@ namespace StrataControllerApp
             cmbThinking.SelectedIndexChanged += delegate
             {
                 if (!suppressThinkingSync)
-                    SyncOmpConfigFiles(GetSelectedModelInfo(), cmbThinking.SelectedItem != null ? cmbThinking.SelectedItem.ToString() : "");
+                    SyncOmpConfigFiles(GetSelectedModelInfo(), cmbThinking.SelectedItem != null ? cmbThinking.SelectedItem.ToString() : "", null);
             };
 
-            btnStart.Click += delegate { InvokeStrataLaunch("", "Starting"); };
+            btnStart.Click += delegate { InvokeStrataLaunch("", "Starting", false); };
 
             btnTune.Click += delegate
             {
@@ -862,16 +945,18 @@ namespace StrataControllerApp
                     MessageBox.Show(this, "Select a downloaded ready model and preset name first.", "Missing Input");
                     return;
                 }
+                string pleMode = cmbPleIo.SelectedItem != null ? cmbPleIo.SelectedItem.ToString() : "auto";
+                string vramRaw = (cmbVramReserve.Text ?? "").Trim();
                 DialogResult ans = MessageBox.Show(
                     this,
-                    string.Format("Tune [{0}] ({1}) for this PC and save to preset '{2}'?\n\nYES = Quick tune (~20 min)\nNO = Thorough tune (up to 2 hours)\nCANCEL = Abort",
-                        sel.FamilyTitle, sel.Model, preset),
+                    string.Format("Tune [{0}] ({1}) for this PC and save to preset '{2}'?\n(PLE I/O: {3}, VRAM Reserve: {4} MiB)\nAny running engine will be stopped first.\n\nYES = Quick tune (~20 min)\nNO = Thorough tune (up to 2 hours)\nCANCEL = Abort",
+                        sel.FamilyTitle, sel.Model, preset, pleMode, vramRaw),
                     "Tune Model",
                     MessageBoxButtons.YesNoCancel,
                     MessageBoxIcon.Question);
                 if (ans == DialogResult.Cancel) return;
                 string mode = (ans == DialogResult.Yes) ? "quick" : "thorough";
-                InvokeStrataLaunch(" --tune " + mode + " --retune --restart", "Tuning (" + mode + ")");
+                InvokeStrataLaunch(" --tune " + mode + " --retune --restart --set STRATA_ARENA_RAM_WAIT_S=60", "Tuning (" + mode + ")", true);
             };
 
             btnStop.Click += delegate
@@ -890,7 +975,7 @@ namespace StrataControllerApp
             {
                 WriteGuiLog("Force-killing strata processes...");
                 bool killedAny = false;
-                foreach (string name in EngineProcNames)
+                foreach (string name in KillProcNames)
                 {
                     foreach (Process p in Process.GetProcessesByName(name))
                     {
@@ -911,10 +996,30 @@ namespace StrataControllerApp
             {
                 pendingOmpSync = null;
                 StopProcTree(ref actionProc);
+                if (!TestPort8080())
+                {
+                    WriteGuiLog("WARNING: Server is not responding on http://127.0.0.1:8080; start the engine before clicking 'Sync omp'.");
+                    return;
+                }
                 ModelInfo sel = GetSelectedModelInfo();
                 string lvl = cmbThinking.SelectedItem != null ? cmbThinking.SelectedItem.ToString() : "";
-                WriteGuiLog(string.Format("Syncing omp (thinking: {0})...", lvl));
-                pendingOmpSync = new PendingOmpSyncInfo { Info = sel, Level = lvl };
+                string cfgPath = ResolveOmpFile("config");
+                bool hadCfg = File.Exists(cfgPath);
+                string origCfg = null;
+                if (hadCfg)
+                {
+                    try { origCfg = File.ReadAllText(cfgPath, Encoding.UTF8); } catch { origCfg = null; }
+                }
+
+                WriteGuiLog(string.Format("Syncing omp (thinking: {0}; preserving existing config.yml keys)...", lvl));
+                pendingOmpSync = new PendingOmpSyncInfo
+                {
+                    Info = sel,
+                    Level = lvl,
+                    ConfigPath = cfgPath,
+                    OriginalConfigText = origCfg,
+                    HadOriginalConfig = hadCfg
+                };
                 actionProc = StartInteractiveCmd(
                     string.Format("call strata connect omp --write --yes >> \"{0}\" 2>&1", tempCmdLog),
                     tempCmdLog,
@@ -926,15 +1031,22 @@ namespace StrataControllerApp
             {
                 ModelInfo sel = GetSelectedModelInfo();
                 string lvl = cmbThinking.SelectedItem != null ? cmbThinking.SelectedItem.ToString() : "";
-                SyncOmpConfigFiles(sel, lvl);
+                ThinkingProfile prof = GetThinkingProfile(sel != null ? sel.Family : "qwen");
+                string resolvedLvl = !string.IsNullOrEmpty(lvl) ? ResolveThinkingChoice(lvl, prof) : "";
+
+                SyncOmpConfigFiles(sel, resolvedLvl, null);
                 string dir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
                 using (FolderBrowserDialog dlg = new FolderBrowserDialog())
                 {
                     dlg.Description = "Select workspace folder for omp (Cancel for user home):";
                     if (dlg.ShowDialog(this) == DialogResult.OK) dir = dlg.SelectedPath;
                 }
-                WriteGuiLog(string.Format("Launching omp (thinking: {0}) in: {1}", lvl, dir));
-                Process.Start(new ProcessStartInfo("cmd.exe", "/k omp -c") { WorkingDirectory = dir });
+
+                string contArg = chkOmpContinue.Checked ? " -c" : "";
+                string thinkArg = !string.IsNullOrEmpty(resolvedLvl) ? " --thinking " + resolvedLvl : "";
+                string ompCmd = "omp" + contArg + thinkArg;
+                WriteGuiLog(string.Format("Launching '{0}' in: {1}", ompCmd, dir));
+                Process.Start(new ProcessStartInfo("cmd.exe", "/k " + ompCmd) { WorkingDirectory = dir });
             };
 
             btnOpenLog.Click += delegate
@@ -943,13 +1055,20 @@ namespace StrataControllerApp
             };
         }
 
-        private void InvokeStrataLaunch(string extraArgs, string actionLabel)
+        private void InvokeStrataLaunch(string extraArgs, string actionLabel, bool stopFirst)
         {
             ModelInfo sel = GetSelectedModelInfo();
             string ctx = cmbCtx.Text.Trim(), preset = txtPreset.Text.Trim();
             if (sel == null || string.IsNullOrEmpty(preset))
             {
                 MessageBox.Show(this, "Select a downloaded ready model and preset name first.", "Missing Input");
+                return;
+            }
+
+            string optArgs, optErr;
+            if (!TryBuildEngineOptionArgs(out optArgs, out optErr))
+            {
+                MessageBox.Show(this, optErr, "Invalid Option");
                 return;
             }
 
@@ -962,12 +1081,13 @@ namespace StrataControllerApp
 
             string spdArg = (sel.Family == "deepseek41") ? " --speed \"" + cmbSpeed.Text + "\"" : "";
             string launchArgs = string.Format(
-                "--family \"{0}\" --model \"{1}\" --context \"{2}\"{3} --save-preset \"{4}\"{5} --no-tui",
-                sel.Family, sel.Model, ctx, spdArg, preset, extraArgs);
+                "--family \"{0}\" --model \"{1}\" --context \"{2}\"{3} --save-preset \"{4}\"{5}{6} --no-tui",
+                sel.Family, sel.Model, ctx, spdArg, preset, optArgs, extraArgs);
 
             WriteGuiLog(string.Format("{0} [{1}]: strata launch {2}", actionLabel, sel.FamilyTitle, launchArgs));
+            string cmdPrefix = stopFirst ? "call strata launch --stop > nul 2>&1 & " : "";
             launchProc = StartInteractiveCmd(
-                string.Format("call strata launch {0} > \"{1}\" 2>&1", launchArgs, tempLaunchLog),
+                string.Format("{0}call strata launch {1} > \"{2}\" 2>&1", cmdPrefix, launchArgs, tempLaunchLog),
                 tempLaunchLog,
                 ref launchLogPos,
                 false);
@@ -997,9 +1117,44 @@ namespace StrataControllerApp
             return lines.Count;
         }
 
-        private bool PatchOmpModelsYml(string path, ThinkingProfile prof, string level)
+        private static string GetModelIdFromModelsYml(string path, string providerName)
         {
-            if (!File.Exists(path)) return false;
+            if (!File.Exists(path)) return "";
+            try
+            {
+                List<string> lines = new List<string>(Regex.Split(File.ReadAllText(path, Encoding.UTF8), @"\r?\n"));
+                int provIdx = -1;
+                for (int i = 0; i < lines.Count; i++)
+                    if (Regex.IsMatch(lines[i], @"^providers:\s*(?:#.*)?$")) { provIdx = i; break; }
+                if (provIdx < 0) return "";
+
+                int targetIdx = -1;
+                string targetIndent = "";
+                string provRegex = @"^([ \t]+)" + Regex.Escape(providerName) + @":\s*(?:#.*)?$";
+                for (int i = provIdx + 1; i < lines.Count; i++)
+                {
+                    string ln = lines[i];
+                    if (string.IsNullOrWhiteSpace(ln) || ln.TrimStart().StartsWith("#")) continue;
+                    if (GetIndentLen(ln) == 0) break;
+                    Match sm = Regex.Match(ln, provRegex);
+                    if (sm.Success) { targetIdx = i; targetIndent = sm.Groups[1].Value; break; }
+                }
+                if (targetIdx < 0) return "";
+
+                int tEnd = FindBlockEnd(lines, targetIdx, targetIndent.Length);
+                for (int i = targetIdx + 1; i < tEnd; i++)
+                {
+                    Match idM = Regex.Match(lines[i], @"^[ \t]+-\s+id:\s*([""']?)([^\s#""']+)\1");
+                    if (idM.Success) return idM.Groups[2].Value;
+                }
+            }
+            catch { }
+            return "";
+        }
+
+        private bool PatchOmpModelsYml(string path, string providerName, ThinkingProfile prof, string level)
+        {
+            if (!File.Exists(path) || string.IsNullOrEmpty(providerName)) return false;
             List<string> lines = new List<string>(Regex.Split(File.ReadAllText(path, Encoding.UTF8), @"\r?\n"));
             while (lines.Count > 0 && lines[lines.Count - 1] == "") lines.RemoveAt(lines.Count - 1);
 
@@ -1010,12 +1165,13 @@ namespace StrataControllerApp
 
             int strataIdx = -1;
             string strataIndent = "";
+            string provRegex = @"^([ \t]+)" + Regex.Escape(providerName) + @":\s*(?:#.*)?$";
             for (int i = provIdx + 1; i < lines.Count; i++)
             {
                 string ln = lines[i];
                 if (string.IsNullOrWhiteSpace(ln) || ln.TrimStart().StartsWith("#")) continue;
                 if (GetIndentLen(ln) == 0) break;
-                Match sm = Regex.Match(ln, @"^([ \t]+)strata:\s*(?:#.*)?$");
+                Match sm = Regex.Match(ln, provRegex);
                 if (sm.Success) { strataIdx = i; strataIndent = sm.Groups[1].Value; break; }
             }
             if (strataIdx < 0) return false;
@@ -1152,7 +1308,7 @@ namespace StrataControllerApp
             return true;
         }
 
-        private void SyncOmpConfigFiles(ModelInfo modelInfo, string level)
+        private void SyncOmpConfigFiles(ModelInfo modelInfo, string level, string forceDefaultBaseModel)
         {
             if (string.IsNullOrEmpty(level)) return;
             ThinkingProfile prof = GetThinkingProfile(modelInfo != null ? modelInfo.Family : "qwen");
@@ -1166,48 +1322,86 @@ namespace StrataControllerApp
                 List<string> lines = new List<string>(Regex.Split(txt, @"\r?\n"));
                 while (lines.Count > 0 && lines[lines.Count - 1] == "") lines.RemoveAt(lines.Count - 1);
 
+                string activeProvider = "strata";
                 int mrIdx = -1;
                 for (int i = 0; i < lines.Count; i++)
-                    if (Regex.IsMatch(lines[i], @"^modelRoles:\s*(?:#.*)?$")) { mrIdx = i; break; }
+                    if (Regex.IsMatch(lines[i], @"^modelRoles:(\s*\{\s*\})?\s*(?:#.*)?$")) { mrIdx = i; break; }
 
+                string fallbackTarget = (!string.IsNullOrEmpty(forceDefaultBaseModel) ? forceDefaultBaseModel : "strata/strata") + ":" + lvl;
                 if (mrIdx >= 0)
                 {
-                    for (int i = mrIdx + 1; i < lines.Count; i++)
+                    if (Regex.IsMatch(lines[mrIdx], @"^modelRoles:\s*\{\s*\}"))
+                        lines[mrIdx] = "modelRoles:";
+
+                    int mrEnd = FindBlockEnd(lines, mrIdx, 0);
+                    string roleIndent = "  ";
+                    int defaultLineIdx = -1;
+                    for (int i = mrIdx + 1; i < mrEnd; i++)
                     {
                         string ln = lines[i];
                         if (string.IsNullOrWhiteSpace(ln) || ln.TrimStart().StartsWith("#")) continue;
-                        if (GetIndentLen(ln) == 0) break;
-                        Match rm = Regex.Match(ln, @"^([ \t]+default:\s*)(strata/[^\s#]+)(.*)$");
+                        Match indentM = Regex.Match(ln, @"^([ \t]+)\S");
+                        if (indentM.Success && roleIndent == "  ") roleIndent = indentM.Groups[1].Value;
+                        if (Regex.IsMatch(ln, @"^[ \t]+default:\s*")) { defaultLineIdx = i; break; }
+                    }
+
+                    if (defaultLineIdx >= 0)
+                    {
+                        Match rm = Regex.Match(lines[defaultLineIdx], @"^([ \t]+default:\s*)([""']?)([^\s#""']+)([""']?)(.*)$");
                         if (rm.Success)
                         {
-                            string baseId = Regex.Replace(rm.Groups[2].Value, @":(off|minimal|low|medium|high|xhigh|max|auto|inherit)$", "");
-                            lines[i] = rm.Groups[1].Value + (lvl == "auto" ? baseId : baseId + ":" + lvl) + rm.Groups[3].Value;
-                            break;
+                            string existingSelector = rm.Groups[3].Value;
+                            string existingBase = Regex.Replace(existingSelector, @":(off|minimal|low|medium|high|xhigh|max|auto|inherit)$", "", RegexOptions.IgnoreCase);
+                            string newBase = !string.IsNullOrEmpty(forceDefaultBaseModel) ? forceDefaultBaseModel : existingBase;
+                            int slashIdx = newBase.IndexOf('/');
+                            if (slashIdx > 0) activeProvider = newBase.Substring(0, slashIdx);
+                            lines[defaultLineIdx] = rm.Groups[1].Value + rm.Groups[2].Value + newBase + ":" + lvl + rm.Groups[4].Value + rm.Groups[5].Value;
                         }
                     }
+                    else
+                    {
+                        lines.Insert(mrIdx + 1, roleIndent + "default: " + fallbackTarget);
+                    }
+                }
+                else
+                {
+                    lines.Add("modelRoles:");
+                    lines.Add("  default: " + fallbackTarget);
                 }
 
                 int dtlIdx = -1;
                 for (int i = 0; i < lines.Count; i++)
-                    if (Regex.IsMatch(lines[i], @"^defaultThinkingLevel:\s*([a-zA-Z0-9_-]*)(.*)$")) { dtlIdx = i; break; }
+                    if (Regex.IsMatch(lines[i], @"^defaultThinkingLevel:\s*")) { dtlIdx = i; break; }
 
                 string[] validDtl = { "minimal", "low", "medium", "high", "xhigh", "max", "auto" };
                 if (lvl == "off")
                 {
                     if (dtlIdx >= 0)
                     {
-                        string curDtl = Regex.Match(lines[dtlIdx], @"^defaultThinkingLevel:\s*([a-zA-Z0-9_-]*)").Groups[1].Value.ToLowerInvariant();
-                        if (Array.IndexOf(validDtl, curDtl) < 0) lines[dtlIdx] = "defaultThinkingLevel: " + prof.Efforts[0];
+                        Match dtlM = Regex.Match(lines[dtlIdx], @"^(defaultThinkingLevel:\s*)([^\s#]*)(.*)$");
+                        string curDtl = dtlM.Success ? dtlM.Groups[2].Value.ToLowerInvariant() : "";
+                        if (Array.IndexOf(validDtl, curDtl) < 0)
+                            lines[dtlIdx] = (dtlM.Success ? dtlM.Groups[1].Value : "defaultThinkingLevel: ") + prof.Efforts[0] + (dtlM.Success ? dtlM.Groups[3].Value : "");
                     }
                     else lines.Add("defaultThinkingLevel: " + prof.Efforts[0]);
                 }
-                else if (dtlIdx >= 0) lines[dtlIdx] = "defaultThinkingLevel: " + lvl;
+                else if (dtlIdx >= 0)
+                {
+                    Match dtlM = Regex.Match(lines[dtlIdx], @"^(defaultThinkingLevel:\s*)([^\s#]*)(.*)$");
+                    lines[dtlIdx] = (dtlM.Success ? dtlM.Groups[1].Value : "defaultThinkingLevel: ") + lvl + (dtlM.Success ? dtlM.Groups[3].Value : "");
+                }
                 else lines.Add("defaultThinkingLevel: " + lvl);
 
                 File.WriteAllText(cfgPath, string.Join("\r\n", lines) + "\r\n", Program.Utf8NoBom);
-                bool patchedModels = PatchOmpModelsYml(modPath, prof, lvl);
-                string msg = string.Format("Synced OMP thinking -> {0} (efforts: [{1}])", lvl, string.Join(", ", prof.Efforts));
-                if (!patchedModels) msg += " [run 'Sync omp' while engine serves to generate models.yml]";
+
+                bool patchedStrata = PatchOmpModelsYml(modPath, "strata", prof, lvl);
+                bool patchedActive = !string.Equals(activeProvider, "strata", StringComparison.OrdinalIgnoreCase) &&
+                                     PatchOmpModelsYml(modPath, activeProvider, prof, lvl);
+                bool patchedModels = patchedStrata || patchedActive;
+
+                string msg = string.Format("Synced OMP thinking -> {0} (role provider: {1}, efforts: [{2}])", lvl, activeProvider, string.Join(", ", prof.Efforts));
+                if (!patchedModels)
+                    msg += string.Format(" [NOTE: '{0}' is not in models.yml; click 'Sync omp' while serving to configure provider 'strata']", activeProvider);
                 WriteGuiLog(msg);
             }
             catch (Exception ex)
@@ -1415,17 +1609,23 @@ namespace StrataControllerApp
                 try { exitOk = (actionProc.ExitCode == 0); } catch { }
                 StopProcTree(ref actionProc);
 
+                if (pending.HadOriginalConfig && pending.OriginalConfigText != null && !string.IsNullOrEmpty(pending.ConfigPath))
+                {
+                    try { File.WriteAllText(pending.ConfigPath, pending.OriginalConfigText, Program.Utf8NoBom); } catch { }
+                }
+
                 if (exitOk)
                 {
                     ModelInfo syncInfo = pending.Info;
-                    if (TestPort8080())
-                    {
-                        string loadedId = GetLoadedStrataModelId();
-                        if (!string.IsNullOrEmpty(loadedId) && loadedId != "strata")
-                            syncInfo = ResolveModelInfo(loadedId, "");
-                    }
+                    string loadedId = TestPort8080() ? GetLoadedStrataModelId() : "";
+                    if (!string.IsNullOrEmpty(loadedId) && loadedId != "strata")
+                        syncInfo = ResolveModelInfo(loadedId, "");
+
+                    string modYmlId = GetModelIdFromModelsYml(ResolveOmpFile("models"), "strata");
+                    string targetId = !string.IsNullOrEmpty(modYmlId) ? modYmlId : (!string.IsNullOrEmpty(loadedId) ? loadedId : "strata");
+
                     ThinkingProfile prof = GetThinkingProfile(syncInfo != null ? syncInfo.Family : "qwen");
-                    SyncOmpConfigFiles(syncInfo, ResolveThinkingChoice(pending.Level, prof));
+                    SyncOmpConfigFiles(syncInfo, ResolveThinkingChoice(pending.Level, prof), "strata/" + targetId);
                     actionProc = StartInteractiveCmd(
                         string.Format("call strata connect omp --check >> \"{0}\" 2>&1", tempCmdLog),
                         tempCmdLog,
@@ -1434,7 +1634,7 @@ namespace StrataControllerApp
                 }
                 else
                 {
-                    WriteGuiLog("WARNING: 'strata connect omp --write --yes' did not complete; skipping OMP config patch.");
+                    WriteGuiLog("WARNING: 'strata connect omp --write --yes' did not complete; original config.yml preserved.");
                 }
             }
 
@@ -1536,6 +1736,7 @@ namespace StrataControllerApp
                 if (pollTimer != null) { pollTimer.Stop(); pollTimer.Dispose(); pollTimer = null; }
                 if (launchProc != null) { try { launchProc.Dispose(); } catch { } launchProc = null; }
                 if (actionProc != null) { try { actionProc.Dispose(); } catch { } actionProc = null; }
+                if (toolTip != null) { toolTip.Dispose(); toolTip = null; }
                 fontUI.Dispose();
                 fontBold.Dispose();
                 fontStatus.Dispose();
