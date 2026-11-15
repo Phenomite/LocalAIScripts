@@ -17,18 +17,13 @@ namespace StrataControllerApp
 {
     internal sealed class ModelInfo
     {
-        public string Family;
-        public string FamilyTitle;
-        public string Model;
-        public string Display;
+        public string Family, FamilyTitle, Model, Display;
     }
 
     internal sealed class ThinkingProfile
     {
-        public string Key;
-        public string[] UiLevels;
-        public string[] Efforts;
-        public string DefaultLevel;
+        public string Key, DefaultLevel;
+        public string[] UiLevels, Efforts;
     }
 
     internal sealed class PendingOmpSyncInfo
@@ -49,17 +44,16 @@ namespace StrataControllerApp
         private static void Main()
         {
             string bootLog = Environment.GetEnvironmentVariable("STRATA_BOOTLOG");
-            string tempDir = Path.GetTempPath();
             DebugLogPath = !string.IsNullOrEmpty(bootLog)
                 ? bootLog
-                : Path.Combine(tempDir, "StrataController.debug.log");
+                : Path.Combine(Path.GetTempPath(), "StrataController.debug.log");
 
             try { SetProcessDPIAware(); } catch { }
 
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
-            Application.ThreadException += delegate(object sender, System.Threading.ThreadExceptionEventArgs e)
+            Application.ThreadException += delegate(object s, System.Threading.ThreadExceptionEventArgs e)
             {
                 ReportFatal("Unhandled UI Exception", e.Exception);
             };
@@ -69,7 +63,7 @@ namespace StrataControllerApp
                 CleanupOrphanProcesses();
                 File.WriteAllText(
                     DebugLogPath,
-                    string.Format("[{0}] Bootstrap starting\r\n", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff")),
+                    string.Format("[{0:yyyy-MM-dd HH:mm:ss.fff}] Bootstrap starting\r\n", DateTime.Now),
                     Utf8NoBom);
 
                 using (StrataControllerForm form = new StrataControllerForm())
@@ -90,7 +84,7 @@ namespace StrataControllerApp
             {
                 File.AppendAllText(
                     DebugLogPath,
-                    string.Format("[{0}] {1}\r\n", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff"), msg),
+                    string.Format("[{0:yyyy-MM-dd HH:mm:ss.fff}] {1}\r\n", DateTime.Now, msg),
                     Utf8NoBom);
             }
             catch { }
@@ -115,13 +109,10 @@ namespace StrataControllerApp
                     {
                         try
                         {
-                            object pidObj = mo["ProcessId"];
-                            object cmdObj = mo["CommandLine"];
+                            object pidObj = mo["ProcessId"], cmdObj = mo["CommandLine"];
                             string cmdLine = cmdObj != null ? cmdObj.ToString() : "";
                             if (pidObj != null && Regex.IsMatch(cmdLine, @"strata_gui_|strata connect", RegexOptions.IgnoreCase))
-                            {
                                 KillPidTree(Convert.ToInt32(pidObj));
-                            }
                         }
                         catch { }
                         finally { mo.Dispose(); }
@@ -135,9 +126,11 @@ namespace StrataControllerApp
         {
             try
             {
-                ProcessStartInfo psi = new ProcessStartInfo("taskkill.exe", "/F /T /PID " + pid);
-                psi.UseShellExecute = false;
-                psi.CreateNoWindow = true;
+                ProcessStartInfo psi = new ProcessStartInfo("taskkill.exe", "/F /T /PID " + pid)
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
                 using (Process tk = Process.Start(psi))
                 {
                     if (tk != null) tk.WaitForExit(3000);
@@ -149,7 +142,7 @@ namespace StrataControllerApp
 
     internal sealed class StrataControllerForm : Form
     {
-        private static readonly string[] EngineProcNames = new string[] { "strata-dsv41", "strata-server", "strata" };
+        private static readonly string[] EngineProcNames = { "strata-dsv41", "strata-server", "strata" };
         private static readonly Dictionary<string, string> FamilyTitles = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             { "deepseek41", "DeepSeek V4.1-Flash" },
@@ -178,48 +171,23 @@ namespace StrataControllerApp
         private readonly JavaScriptSerializer json = new JavaScriptSerializer();
         private readonly IPGlobalProperties ipProps = IPGlobalProperties.GetIPGlobalProperties();
 
-        private readonly string strataLocalDir;
-        private readonly string launchDir;
-        private readonly string installDir;
-        private readonly string ompAgentDir;
-        private readonly string tempLaunchLog;
-        private readonly string tempCmdLog;
-
-        private readonly Dictionary<string, ModelInfo> modelMap = new Dictionary<string, ModelInfo>(StringComparer.Ordinal);
+        private readonly string strataLocalDir, launchDir, installDir, ompAgentDir, tempLaunchLog, tempCmdLog;
+        private readonly Dictionary<string, ModelInfo> modelMap = new Dictionary<string, ModelInfo>(StringComparer.OrdinalIgnoreCase);
         private readonly List<string> modelKeys = new List<string>();
         private string initialThinking = "medium";
 
-        private Label lblStatus;
-        private Label lblProcInfo;
-        private Label lblModel;
-        private ComboBox cmbModel;
-        private ComboBox cmbCtx;
-        private ComboBox cmbSpeed;
-        private ComboBox cmbThinking;
-        private TextBox txtPreset;
-        private Button btnStart;
-        private Button btnStop;
-        private Button btnKill;
-        private Button btnTune;
-        private Button btnWireOmp;
-        private Button btnRunOmp;
-        private Button btnOpenLog;
-        private TextBox txtLog;
+        private Label lblStatus, lblProcInfo;
+        private ComboBox cmbModel, cmbCtx, cmbSpeed, cmbThinking;
+        private TextBox txtPreset, txtLog;
+        private Button btnStart, btnStop, btnKill, btnTune, btnWireOmp, btnRunOmp, btnOpenLog;
         private Timer pollTimer;
 
-        private bool suppressThinkingSync = false;
-        private string lastThinkingKey = "";
-        private long engineLogPos = 0;
-        private long launchLogPos = 0;
-        private long cmdLogPos = 0;
-        private string currentEngineLog = "";
-        private Process launchProc = null;
-        private Process actionProc = null;
-        private bool isPrompting = false;
-        private PendingOmpSyncInfo pendingOmpSync = null;
+        private bool suppressThinkingSync, isPrompting;
+        private string lastThinkingKey = "", currentEngineLog = "", lastStatusText = "", lastProcInfo = "";
+        private long engineLogPos, launchLogPos, cmdLogPos;
+        private Process launchProc, actionProc;
+        private PendingOmpSyncInfo pendingOmpSync;
         private int lastSyncedEnginePid = -1;
-        private string lastStatusText = "";
-        private string lastProcInfo = "";
 
         public StrataControllerForm()
         {
@@ -240,9 +208,7 @@ namespace StrataControllerApp
             try
             {
                 foreach (string f in Directory.EnumerateFiles(tempDir, "strata_gui_*.log"))
-                {
                     try { File.Delete(f); } catch { }
-                }
             }
             catch { }
 
@@ -256,9 +222,7 @@ namespace StrataControllerApp
                     try
                     {
                         foreach (string f in Directory.EnumerateFiles(launchDir, "*.engine.log"))
-                        {
                             try { File.WriteAllText(f, "", Program.Utf8NoBom); } catch { }
-                        }
                     }
                     catch { }
                 }
@@ -284,8 +248,7 @@ namespace StrataControllerApp
 
             WireEvents();
 
-            pollTimer = new Timer();
-            pollTimer.Interval = 400;
+            pollTimer = new Timer { Interval = 400 };
             pollTimer.Tick += OnPollTimerTick;
             pollTimer.Start();
         }
@@ -294,52 +257,41 @@ namespace StrataControllerApp
         {
             HashSet<string> pathSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             List<string> pathList = new List<string>();
-            List<string> raw = new List<string>
+            string[] sources =
             {
                 Path.Combine(userProfile, @".local\bin"),
                 Path.Combine(localAppData, @"Strata\bin"),
                 Path.Combine(localAppData, "Strata"),
                 Path.Combine(localAppData, @"Programs\Strata"),
                 Path.Combine(userProfile, @".omp\bin"),
-                Path.Combine(appData, "npm")
+                Path.Combine(appData, "npm"),
+                Environment.GetEnvironmentVariable("PATH"),
+                Environment.GetEnvironmentVariable("Path", EnvironmentVariableTarget.User),
+                Environment.GetEnvironmentVariable("Path", EnvironmentVariableTarget.Machine)
             };
 
-            AddSplitPaths(raw, Environment.GetEnvironmentVariable("PATH"));
-            AddSplitPaths(raw, Environment.GetEnvironmentVariable("Path", EnvironmentVariableTarget.User));
-            AddSplitPaths(raw, Environment.GetEnvironmentVariable("Path", EnvironmentVariableTarget.Machine));
-
-            foreach (string p in raw)
+            foreach (string src in sources)
             {
-                if (string.IsNullOrEmpty(p)) continue;
-                string expanded = Environment.ExpandEnvironmentVariables(p.Trim());
-                if (!string.IsNullOrEmpty(expanded) && pathSet.Add(expanded))
+                if (string.IsNullOrEmpty(src)) continue;
+                foreach (string part in src.Split(';'))
                 {
-                    pathList.Add(expanded);
+                    string expanded = Environment.ExpandEnvironmentVariables(part.Trim());
+                    if (!string.IsNullOrEmpty(expanded) && pathSet.Add(expanded))
+                        pathList.Add(expanded);
                 }
             }
-
             Environment.SetEnvironmentVariable("PATH", string.Join(";", pathList), EnvironmentVariableTarget.Process);
-        }
-
-        private static void AddSplitPaths(List<string> dst, string value)
-        {
-            if (string.IsNullOrEmpty(value)) return;
-            foreach (string part in value.Split(';'))
-            {
-                dst.Add(part);
-            }
         }
 
         private static string FindCommandOnPath(string command)
         {
             string pathEnv = Environment.GetEnvironmentVariable("PATH") ?? "";
             string pathExt = Environment.GetEnvironmentVariable("PATHEXT") ?? ".COM;.EXE;.BAT;.CMD";
-            string[] exts = pathExt.Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+            string[] exts = pathExt.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
 
             foreach (string dir in pathEnv.Split(';'))
             {
-                if (string.IsNullOrEmpty(dir)) continue;
-                string trimmed = dir.Trim().Trim('"');
+                string trimmed = (dir ?? "").Trim().Trim('"');
                 if (string.IsNullOrEmpty(trimmed)) continue;
 
                 string direct = Path.Combine(trimmed, command);
@@ -356,12 +308,9 @@ namespace StrataControllerApp
 
         private string ResolveOmpFile(string baseName)
         {
-            foreach (string ext in new string[] { "yml", "yaml" })
-            {
-                string candidate = Path.Combine(ompAgentDir, baseName + "." + ext);
-                if (File.Exists(candidate)) return candidate;
-            }
-            return Path.Combine(ompAgentDir, baseName + ".yml");
+            string yaml = Path.Combine(ompAgentDir, baseName + ".yaml");
+            string yml = Path.Combine(ompAgentDir, baseName + ".yml");
+            return (!File.Exists(yml) && File.Exists(yaml)) ? yaml : yml;
         }
 
         private static bool PathExists(string path)
@@ -371,9 +320,7 @@ namespace StrataControllerApp
 
         private static ModelInfo ResolveModelInfo(string rawModel, string rawFamily)
         {
-            string m = (rawModel ?? "").Trim();
-            m = Regex.Replace(m, @"^strata-", "", RegexOptions.IgnoreCase);
-            m = Regex.Replace(m, @"\.json$", "", RegexOptions.IgnoreCase);
+            string m = Regex.Replace(Regex.Replace((rawModel ?? "").Trim(), @"^strata-", "", RegexOptions.IgnoreCase), @"\.json$", "", RegexOptions.IgnoreCase).ToLowerInvariant();
             string f = (rawFamily ?? "").Trim().ToLowerInvariant();
 
             Match match;
@@ -397,7 +344,7 @@ namespace StrataControllerApp
                 }
                 else if ((match = Regex.Match(m, @"^(coder|swift|unsloth|nvfp4|qwen36)-(.+)$", RegexOptions.IgnoreCase)).Success)
                 {
-                    if (string.IsNullOrEmpty(f)) f = match.Groups[1].Value.ToLowerInvariant();
+                    if (string.IsNullOrEmpty(f)) f = match.Groups[1].Value;
                     m = match.Groups[2].Value;
                 }
             }
@@ -414,70 +361,37 @@ namespace StrataControllerApp
 
             string fTitle;
             if (!FamilyTitles.TryGetValue(f, out fTitle)) fTitle = "Qwen3.8-Flash-Next";
-
-            ModelInfo info = new ModelInfo();
-            info.Family = f;
-            info.FamilyTitle = fTitle;
-            info.Model = m;
-            info.Display = string.Format("[{0}]  {1}", fTitle, m);
-            return info;
+            return new ModelInfo
+            {
+                Family = f,
+                FamilyTitle = fTitle,
+                Model = m,
+                Display = string.Format("[{0}]  {1}", fTitle, m)
+            };
         }
 
         private static ThinkingProfile GetThinkingProfile(string family)
         {
-            ThinkingProfile p = new ThinkingProfile();
             switch (family)
             {
                 case "deepseek41":
-                    p.Key = "deepseek41";
-                    p.UiLevels = new string[] { "auto", "off", "low", "medium", "high", "max" };
-                    p.Efforts = new string[] { "low", "medium", "high", "max" };
-                    p.DefaultLevel = "high";
-                    break;
+                    return new ThinkingProfile { Key = "deepseek41", UiLevels = new[] { "auto", "off", "low", "medium", "high", "max" }, Efforts = new[] { "low", "medium", "high", "max" }, DefaultLevel = "high" };
                 case "qwen36":
-                    p.Key = "qwen36";
-                    p.UiLevels = new string[] { "auto", "off", "low", "medium", "high" };
-                    p.Efforts = new string[] { "low", "medium", "high" };
-                    p.DefaultLevel = "medium";
-                    break;
+                    return new ThinkingProfile { Key = "qwen36", UiLevels = new[] { "auto", "off", "low", "medium", "high" }, Efforts = new[] { "low", "medium", "high" }, DefaultLevel = "medium" };
                 default:
-                    p.Key = "qwen38";
-                    p.UiLevels = new string[] { "auto", "off", "low", "medium", "xhigh" };
-                    p.Efforts = new string[] { "low", "medium", "xhigh" };
-                    p.DefaultLevel = "medium";
-                    break;
+                    return new ThinkingProfile { Key = "qwen38", UiLevels = new[] { "auto", "off", "low", "medium", "xhigh" }, Efforts = new[] { "low", "medium", "xhigh" }, DefaultLevel = "medium" };
             }
-            return p;
         }
 
         private static string ResolveThinkingChoice(string choice, ThinkingProfile prof)
         {
-            string c = (choice ?? "").Trim().ToLowerInvariant();
+            string c = (choice ?? "").Trim().ToLowerInvariant(), mapped = prof.DefaultLevel;
             if (Array.IndexOf(prof.UiLevels, c) >= 0) return c;
-
-            string mapped;
-            switch (c)
-            {
-                case "minimal":
-                    mapped = "off";
-                    break;
-                case "high":
-                    mapped = (Array.IndexOf(prof.UiLevels, "xhigh") >= 0) ? "xhigh" : "high";
-                    break;
-                case "xhigh":
-                    mapped = (Array.IndexOf(prof.UiLevels, "high") >= 0) ? "high" : "xhigh";
-                    break;
-                case "max":
-                    if (Array.IndexOf(prof.UiLevels, "xhigh") >= 0) mapped = "xhigh";
-                    else if (Array.IndexOf(prof.UiLevels, "high") >= 0) mapped = "high";
-                    else mapped = prof.DefaultLevel;
-                    break;
-                default:
-                    mapped = prof.DefaultLevel;
-                    break;
-            }
-
-            return (Array.IndexOf(prof.UiLevels, mapped) >= 0) ? mapped : prof.DefaultLevel;
+            if (c == "minimal") mapped = "off";
+            else if (c == "high") mapped = Array.IndexOf(prof.UiLevels, "xhigh") >= 0 ? "xhigh" : "high";
+            else if (c == "xhigh") mapped = Array.IndexOf(prof.UiLevels, "high") >= 0 ? "high" : "xhigh";
+            else if (c == "max") mapped = Array.IndexOf(prof.UiLevels, "xhigh") >= 0 ? "xhigh" : (Array.IndexOf(prof.UiLevels, "high") >= 0 ? "high" : prof.DefaultLevel);
+            return Array.IndexOf(prof.UiLevels, mapped) >= 0 ? mapped : prof.DefaultLevel;
         }
 
         private void AddReadyInfo(ModelInfo info)
@@ -491,10 +405,7 @@ namespace StrataControllerApp
 
         private void AddReadyModel(string mod, string fam)
         {
-            if (!string.IsNullOrEmpty(mod))
-            {
-                AddReadyInfo(ResolveModelInfo(mod, fam));
-            }
+            if (!string.IsNullOrEmpty(mod)) AddReadyInfo(ResolveModelInfo(mod, fam));
         }
 
         private static Dictionary<string, object> AsDict(object obj)
@@ -511,54 +422,49 @@ namespace StrataControllerApp
         private static bool GetJsonBool(Dictionary<string, object> dict, string key)
         {
             object v;
-            return (dict != null && dict.TryGetValue(key, out v) && v is bool) ? (bool)v : false;
+            return dict != null && dict.TryGetValue(key, out v) && v is bool && (bool)v;
         }
 
         private void DiscoverReadyModels(string userProfile)
         {
-            // 1. Query strata CLI installed models inventory (component_status == 'present')
             if (!string.IsNullOrEmpty(FindCommandOnPath("strata")))
             {
                 try
                 {
-                    ProcessStartInfo psi = new ProcessStartInfo("cmd.exe", "/c strata models list --installed --output json 2>nul");
-                    psi.UseShellExecute = false;
-                    psi.CreateNoWindow = true;
-                    psi.RedirectStandardOutput = true;
-                    psi.StandardOutputEncoding = Encoding.UTF8;
+                    ProcessStartInfo psi = new ProcessStartInfo("cmd.exe", "/c strata models list --installed --output json 2>nul")
+                    {
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        RedirectStandardOutput = true,
+                        StandardOutputEncoding = Encoding.UTF8
+                    };
                     using (Process p = Process.Start(psi))
                     {
                         if (p != null)
                         {
                             string cliJson = p.StandardOutput.ReadToEnd();
                             p.WaitForExit(8000);
-                            int brace = cliJson.IndexOf('{');
-                            int bracket = cliJson.IndexOf('[');
+                            int brace = cliJson.IndexOf('{'), bracket = cliJson.IndexOf('[');
                             int start = (brace >= 0 && (bracket < 0 || brace < bracket)) ? brace : bracket;
                             if (start >= 0)
                             {
                                 object parsed = json.DeserializeObject(cliJson.Substring(start));
-                                object[] items = null;
+                                object[] items = parsed as object[];
                                 Dictionary<string, object> root = AsDict(parsed);
                                 if (root != null)
                                 {
                                     object listObj;
-                                    if (root.TryGetValue("models", out listObj)) items = listObj as object[];
-                                    else if (root.TryGetValue("items", out listObj)) items = listObj as object[];
-                                    else items = new object[] { root };
+                                    if (root.TryGetValue("models", out listObj) || root.TryGetValue("items", out listObj))
+                                        items = listObj as object[];
+                                    else
+                                        items = new object[] { root };
                                 }
-                                else
-                                {
-                                    items = parsed as object[];
-                                }
-
                                 if (items != null)
                                 {
                                     foreach (object itemObj in items)
                                     {
                                         Dictionary<string, object> it = AsDict(itemObj);
-                                        if (it == null) continue;
-                                        if (GetJsonStr(it, "component_status") == "present" || GetJsonBool(it, "ready"))
+                                        if (it != null && (GetJsonStr(it, "component_status") == "present" || GetJsonBool(it, "ready")))
                                         {
                                             string id = GetJsonStr(it, "model");
                                             if (string.IsNullOrEmpty(id)) id = GetJsonStr(it, "model_id");
@@ -574,10 +480,9 @@ namespace StrataControllerApp
                 catch { }
             }
 
-            // 2. Check prepared pack folders on disk across known Strata data roots
             HashSet<string> rootSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             List<string> dataRoots = new List<string>();
-            string[] defaultRoots = new string[]
+            string[] defaultRoots =
             {
                 strataLocalDir,
                 Path.Combine(strataLocalDir, "Strata-data"),
@@ -587,11 +492,9 @@ namespace StrataControllerApp
                 Path.Combine(userProfile, @"Documents\Strata")
             };
             foreach (string r in defaultRoots)
-            {
                 if (!string.IsNullOrEmpty(r) && rootSet.Add(r)) dataRoots.Add(r);
-            }
 
-            string[] cfgFiles = new string[]
+            string[] cfgFiles =
             {
                 Path.Combine(strataLocalDir, "settings.json"),
                 Path.Combine(strataLocalDir, "app-settings.json"),
@@ -603,13 +506,10 @@ namespace StrataControllerApp
                 try
                 {
                     Dictionary<string, object> c = AsDict(json.DeserializeObject(File.ReadAllText(cfgFile, Encoding.UTF8)));
-                    if (c != null)
+                    foreach (string key in new[] { "data_dir", "models_dir" })
                     {
-                        foreach (string key in new string[] { "data_dir", "models_dir" })
-                        {
-                            string p = GetJsonStr(c, key);
-                            if (!string.IsNullOrEmpty(p) && rootSet.Add(p)) dataRoots.Add(p);
-                        }
+                        string p = GetJsonStr(c, key);
+                        if (!string.IsNullOrEmpty(p) && rootSet.Add(p)) dataRoots.Add(p);
                     }
                 }
                 catch { }
@@ -628,9 +528,7 @@ namespace StrataControllerApp
                         try
                         {
                             using (IEnumerator<string> en = Directory.EnumerateFiles(sub).GetEnumerator())
-                            {
                                 hasFiles = en.MoveNext();
-                            }
                         }
                         catch { }
 
@@ -645,8 +543,7 @@ namespace StrataControllerApp
                 catch { }
             }
 
-            // 3. Check install\strata-*.json and launch\*.json configs with verified on-disk packs/logs
-            foreach (string dir in new string[] { installDir, launchDir })
+            foreach (string dir in new[] { installDir, launchDir })
             {
                 if (!Directory.Exists(dir)) continue;
                 try
@@ -660,35 +557,30 @@ namespace StrataControllerApp
                             string baseName = Path.GetFileNameWithoutExtension(fPath);
                             bool packOk = false;
                             object argsObj;
-                            if (j.TryGetValue("args", out argsObj))
+                            if (j.TryGetValue("args", out argsObj) && argsObj is object[])
                             {
-                                object[] jArgs = argsObj as object[];
-                                if (jArgs != null)
+                                object[] jArgs = (object[])argsObj;
+                                for (int i = 0; i < jArgs.Length - 1; i++)
                                 {
-                                    for (int i = 0; i < jArgs.Length - 1; i++)
+                                    if (jArgs[i] != null && jArgs[i].ToString() == "--pack" &&
+                                        jArgs[i + 1] != null && PathExists(jArgs[i + 1].ToString()))
                                     {
-                                        if (jArgs[i] != null && jArgs[i].ToString() == "--pack" &&
-                                            jArgs[i + 1] != null && PathExists(jArgs[i + 1].ToString()))
-                                        {
-                                            packOk = true;
-                                            break;
-                                        }
+                                        packOk = true;
+                                        break;
                                     }
                                 }
                             }
 
                             string mName = GetJsonStr(j, "model");
                             if (string.IsNullOrEmpty(mName) && baseName.StartsWith("strata-", StringComparison.OrdinalIgnoreCase))
-                            {
                                 mName = baseName;
-                            }
 
                             if (!string.IsNullOrEmpty(mName))
                             {
                                 ModelInfo info = ResolveModelInfo(mName, GetJsonStr(j, "family"));
-                                string engLog = Path.Combine(launchDir, baseName + ".engine.log");
-                                string modelPath = GetJsonStr(j, "model_path");
-                                if (packOk || readyPacks.Contains(info.Model) || File.Exists(engLog) || PathExists(modelPath))
+                                if (packOk || readyPacks.Contains(info.Model) ||
+                                    File.Exists(Path.Combine(launchDir, baseName + ".engine.log")) ||
+                                    PathExists(GetJsonStr(j, "model_path")))
                                 {
                                     AddReadyInfo(info);
                                 }
@@ -714,10 +606,7 @@ namespace StrataControllerApp
                         cfgRaw,
                         @"^modelRoles:\s*(?:#.*)?\r?\n(?:[ \t]*(?:#[^\r\n]*)?\r?\n|[ \t]+[^\r\n]*\r?\n)*?[ \t]+default:\s*strata/[^:\s#]+:(off|minimal|low|medium|high|xhigh|max|auto)\b",
                         RegexOptions.Multiline | RegexOptions.IgnoreCase);
-                    if (mRole.Success)
-                    {
-                        found = mRole.Groups[1].Value.ToLowerInvariant();
-                    }
+                    if (mRole.Success) found = mRole.Groups[1].Value.ToLowerInvariant();
                     else
                     {
                         Match mDtl = Regex.Match(cfgRaw, @"^\s*defaultThinkingLevel:\s*([a-zA-Z0-9_-]+)", RegexOptions.Multiline);
@@ -734,9 +623,8 @@ namespace StrataControllerApp
                 {
                     try
                     {
-                        string modRaw = File.ReadAllText(modPath, Encoding.UTF8);
                         Match mDef = Regex.Match(
-                            modRaw,
+                            File.ReadAllText(modPath, Encoding.UTF8),
                             @"^[ \t]+strata:\s*(?:#.*)?\r?\n(?:[ \t]*(?:#[^\r\n]*)?\r?\n|[ \t]{2,}[^\r\n]*\r?\n)*?[ \t]+defaultLevel:\s*([a-zA-Z0-9_-]+)",
                             RegexOptions.Multiline | RegexOptions.IgnoreCase);
                         if (mDef.Success) found = mDef.Groups[1].Value.ToLowerInvariant();
@@ -761,33 +649,35 @@ namespace StrataControllerApp
 
             SuspendLayout();
 
-            TableLayoutPanel statusGrid = NewGrid(46, new float[] { 0f, 100f }, new float[] { 100f }, BgPanel, new Padding(12, 6, 12, 6));
+            TableLayoutPanel statusGrid = NewGrid(46, new[] { 0f, 100f }, new[] { 100f }, BgPanel, new Padding(12, 6, 12, 6));
             lblStatus   = AddLbl(statusGrid, "[CHECKING ENGINE...]", 0, 0, fontStatus, FgText, true);
             lblProcInfo = AddLbl(statusGrid, "Endpoint: http://127.0.0.1:8080/v1", 1, 0, fontUI, FgMuted, false);
             statusGrid.ResumeLayout(false);
 
-            TableLayoutPanel inputGrid = NewGrid(74, new float[] { 36f, 11f, 13f, 15f, 25f }, new float[] { 42f, 58f }, BgDark, new Padding(12, 6, 12, 2));
-            lblModel    = AddLbl(inputGrid, "Ready Model [Family]:", 0, 0, fontBold, FgText, false);
+            TableLayoutPanel inputGrid = NewGrid(74, new[] { 36f, 11f, 13f, 15f, 25f }, new[] { 42f, 58f }, BgDark, new Padding(12, 6, 12, 2));
+            AddLbl(inputGrid, "Model:", 0, 0, fontBold, FgText, false);
             AddLbl(inputGrid, "Context:", 1, 0, fontUI, FgText, false);
             AddLbl(inputGrid, "Speed (DS41):", 2, 0, fontUI, FgText, false);
             AddLbl(inputGrid, "OMP Thinking:", 3, 0, fontUI, FgText, false);
             AddLbl(inputGrid, "Preset (--save-preset):", 4, 0, fontUI, FgText, false);
 
             cmbModel    = AddCmb(inputGrid, 0, modelKeys.ToArray(), null, ComboBoxStyle.DropDownList);
-            cmbCtx      = AddCmb(inputGrid, 1, new string[] { "256k", "128k", "64k", "32k", "16k", "8k" }, "256k", ComboBoxStyle.DropDown);
-            cmbSpeed    = AddCmb(inputGrid, 2, new string[] { "full", "faster" }, "full", ComboBoxStyle.DropDownList);
+            cmbCtx      = AddCmb(inputGrid, 1, new[] { "256k", "128k", "64k", "32k", "16k", "8k" }, "256k", ComboBoxStyle.DropDown);
+            cmbSpeed    = AddCmb(inputGrid, 2, new[] { "full", "faster" }, "full", ComboBoxStyle.DropDownList);
             cmbThinking = AddCmb(inputGrid, 3, new string[0], null, ComboBoxStyle.DropDownList);
 
-            txtPreset = new TextBox();
-            txtPreset.Dock = DockStyle.Fill;
-            txtPreset.BackColor = BgInput;
-            txtPreset.ForeColor = FgText;
-            txtPreset.BorderStyle = BorderStyle.FixedSingle;
-            txtPreset.Margin = new Padding(3, 2, 3, 2);
+            txtPreset = new TextBox
+            {
+                Dock = DockStyle.Fill,
+                BackColor = BgInput,
+                ForeColor = FgText,
+                BorderStyle = BorderStyle.FixedSingle,
+                Margin = new Padding(3, 2, 3, 2)
+            };
             inputGrid.Controls.Add(txtPreset, 4, 1);
             inputGrid.ResumeLayout(false);
 
-            TableLayoutPanel btnGrid = NewGrid(56, new float[] { 15f, 16f, 13f, 14f, 13f, 14f, 15f }, new float[] { 100f }, BgDark, new Padding(12, 2, 12, 8));
+            TableLayoutPanel btnGrid = NewGrid(56, new[] { 15f, 16f, 13f, 14f, 13f, 14f, 15f }, new[] { 100f }, BgDark, new Padding(12, 2, 12, 8));
             btnStart   = AddBtn(btnGrid, "Start Engine",    0, Color.FromArgb(35, 134, 54),  fontBold);
             btnStop    = AddBtn(btnGrid, "Stop (Graceful)", 1, Color.FromArgb(180, 105, 14), fontBold);
             btnKill    = AddBtn(btnGrid, "Force Kill",      2, Color.FromArgb(190, 40, 40),  fontBold);
@@ -797,47 +687,44 @@ namespace StrataControllerApp
             btnOpenLog = AddBtn(btnGrid, "Open Debug Log",  6, BgPanel,                      fontUI);
             btnGrid.ResumeLayout(false);
 
-            Panel logPanel = new Panel();
-            logPanel.Dock = DockStyle.Fill;
-            logPanel.Padding = new Padding(16, 0, 16, 16);
+            Panel logPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16, 0, 16, 16) };
             Controls.Add(logPanel);
             logPanel.BringToFront();
 
-            txtLog = new TextBox();
-            txtLog.Multiline = true;
-            txtLog.ReadOnly = true;
-            txtLog.ScrollBars = ScrollBars.Vertical;
-            txtLog.Dock = DockStyle.Fill;
-            txtLog.MaxLength = int.MaxValue;
-            txtLog.Font = fontMono;
-            txtLog.BorderStyle = BorderStyle.FixedSingle;
-            txtLog.BackColor = Color.FromArgb(16, 16, 20);
-            txtLog.ForeColor = Color.FromArgb(200, 215, 225);
+            txtLog = new TextBox
+            {
+                Multiline = true,
+                ReadOnly = true,
+                ScrollBars = ScrollBars.Vertical,
+                Dock = DockStyle.Fill,
+                MaxLength = int.MaxValue,
+                Font = fontMono,
+                BorderStyle = BorderStyle.FixedSingle,
+                BackColor = Color.FromArgb(16, 16, 20),
+                ForeColor = Color.FromArgb(200, 215, 225)
+            };
             logPanel.Controls.Add(txtLog);
 
             ResumeLayout(true);
-
             SyncModelSelection();
         }
 
         private TableLayoutPanel NewGrid(int height, float[] cols, float[] rows, Color bg, Padding pad)
         {
-            TableLayoutPanel g = new TableLayoutPanel();
-            g.Dock = DockStyle.Top;
-            g.Height = height;
-            g.ColumnCount = cols.Length;
-            g.RowCount = rows.Length;
-            g.BackColor = bg;
-            g.Padding = pad;
+            TableLayoutPanel g = new TableLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                Height = height,
+                ColumnCount = cols.Length,
+                RowCount = rows.Length,
+                BackColor = bg,
+                Padding = pad
+            };
             g.SuspendLayout();
             foreach (float w in cols)
-            {
                 g.ColumnStyles.Add(new ColumnStyle(w <= 0f ? SizeType.AutoSize : SizeType.Percent, Math.Max(w, 0f)));
-            }
             foreach (float h in rows)
-            {
                 g.RowStyles.Add(new RowStyle(SizeType.Percent, h));
-            }
             Controls.Add(g);
             g.BringToFront();
             return g;
@@ -845,29 +732,33 @@ namespace StrataControllerApp
 
         private static Label AddLbl(TableLayoutPanel g, string text, int col, int row, Font font, Color color, bool autoSize)
         {
-            Label l = new Label();
-            l.Text = text;
-            l.Font = font;
-            l.ForeColor = color;
-            l.AutoSize = autoSize;
-            l.AutoEllipsis = !autoSize;
-            l.Dock = DockStyle.Fill;
-            l.TextAlign = ContentAlignment.MiddleLeft;
-            l.Margin = new Padding(3, 0, 10, 0);
+            Label l = new Label
+            {
+                Text = text,
+                Font = font,
+                ForeColor = color,
+                AutoSize = autoSize,
+                AutoEllipsis = !autoSize,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Margin = new Padding(3, 0, 10, 0)
+            };
             g.Controls.Add(l, col, row);
             return l;
         }
 
         private static ComboBox AddCmb(TableLayoutPanel g, int col, string[] items, string defaultItem, ComboBoxStyle style)
         {
-            ComboBox c = new ComboBox();
-            c.Dock = DockStyle.Fill;
-            c.BackColor = BgInput;
-            c.ForeColor = FgText;
-            c.FlatStyle = FlatStyle.Flat;
-            c.DropDownStyle = style;
-            c.DropDownWidth = 320;
-            c.Margin = new Padding(3, 2, 3, 2);
+            ComboBox c = new ComboBox
+            {
+                Dock = DockStyle.Fill,
+                BackColor = BgInput,
+                ForeColor = FgText,
+                FlatStyle = FlatStyle.Flat,
+                DropDownStyle = style,
+                DropDownWidth = 320,
+                Margin = new Padding(3, 2, 3, 2)
+            };
             if (items != null && items.Length > 0) c.Items.AddRange(items);
             if (!string.IsNullOrEmpty(defaultItem) && c.Items.Contains(defaultItem)) c.SelectedItem = defaultItem;
             else if (c.Items.Count > 0) c.SelectedIndex = 0;
@@ -877,15 +768,17 @@ namespace StrataControllerApp
 
         private static Button AddBtn(TableLayoutPanel g, string text, int col, Color bg, Font font)
         {
-            Button b = new Button();
-            b.Text = text;
-            b.Font = font;
-            b.Dock = DockStyle.Fill;
-            b.BackColor = bg;
-            b.ForeColor = FgText;
-            b.FlatStyle = FlatStyle.Flat;
-            b.AutoEllipsis = true;
-            b.Margin = new Padding(3, 4, 3, 4);
+            Button b = new Button
+            {
+                Text = text,
+                Font = font,
+                Dock = DockStyle.Fill,
+                BackColor = bg,
+                ForeColor = FgText,
+                FlatStyle = FlatStyle.Flat,
+                AutoEllipsis = true,
+                Margin = new Padding(3, 4, 3, 4)
+            };
             b.FlatAppearance.BorderSize = 0;
             g.Controls.Add(b, col, 0);
             return b;
@@ -905,12 +798,11 @@ namespace StrataControllerApp
                 ? preferred
                 : (cmbThinking.SelectedItem != null ? cmbThinking.SelectedItem.ToString() : initialThinking);
             string pick = ResolveThinkingChoice(cur, prof);
-            bool needsRebuild = (lastThinkingKey != prof.Key) || (cmbThinking.Items.Count != prof.UiLevels.Length);
 
             suppressThinkingSync = true;
             try
             {
-                if (needsRebuild)
+                if (lastThinkingKey != prof.Key || cmbThinking.Items.Count != prof.UiLevels.Length)
                 {
                     cmbThinking.BeginUpdate();
                     try
@@ -934,16 +826,14 @@ namespace StrataControllerApp
             string c = cmbCtx.Text.Trim().ToLowerInvariant().Replace("k", "");
             if (sel != null)
             {
-                lblModel.Text = string.Format("Model [{0} (--family {1})]:", sel.FamilyTitle, sel.Family);
                 cmbSpeed.Enabled = (sel.Family == "deepseek41");
-                txtPreset.Text = (sel.Model == "ist-das-coder")
+                txtPreset.Text = string.Equals(sel.Model, "ist-das-coder", StringComparison.OrdinalIgnoreCase)
                     ? "ds41-coder-" + c
                     : string.Format("{0}-{1}-{2}", sel.Family, Regex.Replace(sel.Model, @"[^a-zA-Z0-9\-]", "-"), c);
                 UpdateThinkingOptions(sel.Family, null);
             }
             else
             {
-                lblModel.Text = "Ready Model [None Found]:";
                 cmbSpeed.Enabled = false;
                 UpdateThinkingOptions("qwen", null);
             }
@@ -957,9 +847,8 @@ namespace StrataControllerApp
 
             cmbThinking.SelectedIndexChanged += delegate
             {
-                if (suppressThinkingSync) return;
-                string lvl = cmbThinking.SelectedItem != null ? cmbThinking.SelectedItem.ToString() : "";
-                SyncOmpConfigFiles(GetSelectedModelInfo(), lvl);
+                if (!suppressThinkingSync)
+                    SyncOmpConfigFiles(GetSelectedModelInfo(), cmbThinking.SelectedItem != null ? cmbThinking.SelectedItem.ToString() : "");
             };
 
             btnStart.Click += delegate { InvokeStrataLaunch("", "Starting"); };
@@ -1027,7 +916,7 @@ namespace StrataControllerApp
                 WriteGuiLog(string.Format("Syncing omp (thinking: {0})...", lvl));
                 pendingOmpSync = new PendingOmpSyncInfo { Info = sel, Level = lvl };
                 actionProc = StartInteractiveCmd(
-                    string.Format("call strata connect omp --write >> \"{0}\" 2>&1", tempCmdLog),
+                    string.Format("call strata connect omp --write --yes >> \"{0}\" 2>&1", tempCmdLog),
                     tempCmdLog,
                     ref cmdLogPos,
                     false);
@@ -1045,9 +934,7 @@ namespace StrataControllerApp
                     if (dlg.ShowDialog(this) == DialogResult.OK) dir = dlg.SelectedPath;
                 }
                 WriteGuiLog(string.Format("Launching omp (thinking: {0}) in: {1}", lvl, dir));
-                ProcessStartInfo psi = new ProcessStartInfo("cmd.exe", "/k omp");
-                psi.WorkingDirectory = dir;
-                Process.Start(psi);
+                Process.Start(new ProcessStartInfo("cmd.exe", "/k omp -c") { WorkingDirectory = dir });
             };
 
             btnOpenLog.Click += delegate
@@ -1059,8 +946,7 @@ namespace StrataControllerApp
         private void InvokeStrataLaunch(string extraArgs, string actionLabel)
         {
             ModelInfo sel = GetSelectedModelInfo();
-            string ctx = cmbCtx.Text.Trim();
-            string preset = txtPreset.Text.Trim();
+            string ctx = cmbCtx.Text.Trim(), preset = txtPreset.Text.Trim();
             if (sel == null || string.IsNullOrEmpty(preset))
             {
                 MessageBox.Show(this, "Select a downloaded ready model and preset name first.", "Missing Input");
@@ -1071,9 +957,7 @@ namespace StrataControllerApp
             lastSyncedEnginePid = -1;
             currentEngineLog = Path.Combine(launchDir, preset + ".engine.log");
             if (File.Exists(currentEngineLog))
-            {
                 try { File.WriteAllText(currentEngineLog, "", Program.Utf8NoBom); } catch { }
-            }
             engineLogPos = 0;
 
             string spdArg = (sel.Family == "deepseek41") ? " --speed \"" + cmbSpeed.Text + "\"" : "";
@@ -1091,7 +975,7 @@ namespace StrataControllerApp
 
         private void WriteGuiLog(string msg)
         {
-            txtLog.AppendText(string.Format("[{0}] {1}\r\n", DateTime.Now.ToString("HH:mm:ss"), msg));
+            txtLog.AppendText(string.Format("[{0:HH:mm:ss}] {1}\r\n", DateTime.Now, msg));
             txtLog.ScrollToCaret();
             Program.WriteDebugFile(msg);
         }
@@ -1103,29 +987,25 @@ namespace StrataControllerApp
             return count;
         }
 
-        private static int FindStrataEnd(List<string> lines, int strataIdx, int sLen)
+        private static int FindBlockEnd(List<string> lines, int startIdx, int parentIndent)
         {
-            int end = lines.Count;
-            for (int k = strataIdx + 1; k < lines.Count; k++)
+            for (int k = startIdx + 1; k < lines.Count; k++)
             {
                 if (string.IsNullOrWhiteSpace(lines[k]) || lines[k].TrimStart().StartsWith("#")) continue;
-                if (GetIndentLen(lines[k]) <= sLen) { end = k; break; }
+                if (GetIndentLen(lines[k]) <= parentIndent) return k;
             }
-            return end;
+            return lines.Count;
         }
 
         private bool PatchOmpModelsYml(string path, ThinkingProfile prof, string level)
         {
             if (!File.Exists(path)) return false;
-            string raw = File.ReadAllText(path, Encoding.UTF8);
-            List<string> lines = new List<string>(Regex.Split(raw, @"\r?\n"));
+            List<string> lines = new List<string>(Regex.Split(File.ReadAllText(path, Encoding.UTF8), @"\r?\n"));
             while (lines.Count > 0 && lines[lines.Count - 1] == "") lines.RemoveAt(lines.Count - 1);
 
             int provIdx = -1;
             for (int i = 0; i < lines.Count; i++)
-            {
                 if (Regex.IsMatch(lines[i], @"^providers:\s*(?:#.*)?$")) { provIdx = i; break; }
-            }
             if (provIdx < 0) return false;
 
             int strataIdx = -1;
@@ -1141,7 +1021,7 @@ namespace StrataControllerApp
             if (strataIdx < 0) return false;
 
             int sLen = strataIndent.Length;
-            int strataEnd = FindStrataEnd(lines, strataIdx, sLen);
+            int strataEnd = FindBlockEnd(lines, strataIdx, sLen);
             string childIndent = strataIndent + "  ";
             for (int i = strataIdx + 1; i < strataEnd; i++)
             {
@@ -1150,7 +1030,7 @@ namespace StrataControllerApp
             }
             int cLen = childIndent.Length;
 
-            KeyValuePair<string, string>[] compatList = new KeyValuePair<string, string>[]
+            KeyValuePair<string, string>[] compatList =
             {
                 new KeyValuePair<string, string>("supportsDeveloperRole", "false"),
                 new KeyValuePair<string, string>("supportsReasoningEffort", "true"),
@@ -1162,57 +1042,38 @@ namespace StrataControllerApp
             Dictionary<string, string> compatMap = new Dictionary<string, string>(StringComparer.Ordinal);
             foreach (KeyValuePair<string, string> kv in compatList) compatMap[kv.Key] = kv.Value;
 
-            int compatIdx = -1;
-            int modelsIdx = -1;
+            int compatIdx = -1, modelsIdx = -1;
             for (int i = strataIdx + 1; i < strataEnd; i++)
             {
                 string ln = lines[i];
-                if (string.IsNullOrWhiteSpace(ln) || ln.TrimStart().StartsWith("#")) continue;
-                if (GetIndentLen(ln) == cLen)
-                {
-                    if (compatIdx < 0 && Regex.IsMatch(ln, @"^[ \t]+compat:(\s*\{\s*\})?\s*(?:#.*)?$")) compatIdx = i;
-                    if (modelsIdx < 0 && Regex.IsMatch(ln, @"^[ \t]+models:\s*(?:#.*)?$")) modelsIdx = i;
-                }
+                if (string.IsNullOrWhiteSpace(ln) || ln.TrimStart().StartsWith("#") || GetIndentLen(ln) != cLen) continue;
+                if (compatIdx < 0 && Regex.IsMatch(ln, @"^[ \t]+compat:(\s*\{\s*\})?\s*(?:#.*)?$")) compatIdx = i;
+                if (modelsIdx < 0 && Regex.IsMatch(ln, @"^[ \t]+models:\s*(?:#.*)?$")) modelsIdx = i;
             }
 
             if (compatIdx >= 0)
             {
                 lines[compatIdx] = childIndent + "compat:";
-                int cEnd = strataEnd;
-                for (int i = compatIdx + 1; i < strataEnd; i++)
-                {
-                    if (string.IsNullOrWhiteSpace(lines[i]) || lines[i].TrimStart().StartsWith("#")) continue;
-                    if (GetIndentLen(lines[i]) <= cLen) { cEnd = i; break; }
-                }
-
+                int cEnd = Math.Min(strataEnd, FindBlockEnd(lines, compatIdx, cLen));
                 string kvIndent = childIndent + "  ";
                 HashSet<string> seen = new HashSet<string>(StringComparer.Ordinal);
                 for (int i = compatIdx + 1; i < cEnd; i++)
                 {
                     Match km = Regex.Match(lines[i], @"^([ \t]+)([a-zA-Z0-9_]+):");
-                    if (km.Success)
+                    string val;
+                    if (km.Success && compatMap.TryGetValue(km.Groups[2].Value, out val))
                     {
                         kvIndent = km.Groups[1].Value;
-                        string kName = km.Groups[2].Value;
-                        string val;
-                        if (compatMap.TryGetValue(kName, out val))
-                        {
-                            lines[i] = string.Format("{0}{1}: {2}", kvIndent, kName, val);
-                            seen.Add(kName);
-                        }
+                        lines[i] = string.Format("{0}{1}: {2}", kvIndent, km.Groups[2].Value, val);
+                        seen.Add(km.Groups[2].Value);
                     }
                 }
 
                 int insAt = cEnd;
                 while (insAt > compatIdx + 1 && string.IsNullOrWhiteSpace(lines[insAt - 1])) insAt--;
                 foreach (KeyValuePair<string, string> kv in compatList)
-                {
                     if (!seen.Contains(kv.Key))
-                    {
-                        lines.Insert(insAt, string.Format("{0}{1}: {2}", kvIndent, kv.Key, kv.Value));
-                        insAt++;
-                    }
-                }
+                        lines.Insert(insAt++, string.Format("{0}{1}: {2}", kvIndent, kv.Key, kv.Value));
             }
             else
             {
@@ -1220,61 +1081,41 @@ namespace StrataControllerApp
                 string kvIndent = childIndent + "  ";
                 lines.Insert(insAt++, childIndent + "compat:");
                 foreach (KeyValuePair<string, string> kv in compatList)
-                {
                     lines.Insert(insAt++, string.Format("{0}{1}: {2}", kvIndent, kv.Key, kv.Value));
-                }
             }
 
-            strataEnd = FindStrataEnd(lines, strataIdx, sLen);
+            strataEnd = FindBlockEnd(lines, strataIdx, sLen);
             modelsIdx = -1;
             for (int i = strataIdx + 1; i < strataEnd; i++)
-            {
                 if (GetIndentLen(lines[i]) == cLen && Regex.IsMatch(lines[i], @"^[ \t]+models:\s*(?:#.*)?$"))
                 {
                     modelsIdx = i;
                     break;
                 }
-            }
 
             if (modelsIdx >= 0)
             {
-                int mEnd = strataEnd;
-                for (int i = modelsIdx + 1; i < strataEnd; i++)
-                {
-                    if (string.IsNullOrWhiteSpace(lines[i]) || lines[i].TrimStart().StartsWith("#")) continue;
-                    if (GetIndentLen(lines[i]) <= cLen) { mEnd = i; break; }
-                }
-
+                int mEnd = Math.Min(strataEnd, FindBlockEnd(lines, modelsIdx, cLen));
                 List<int> itemStarts = new List<int>();
                 for (int i = modelsIdx + 1; i < mEnd; i++)
-                {
                     if (Regex.IsMatch(lines[i], @"^[ \t]+-\s+id:")) itemStarts.Add(i);
-                }
 
                 for (int idx = itemStarts.Count - 1; idx >= 0; idx--)
                 {
                     int itStart = itemStarts[idx];
                     int itEnd = (idx + 1 < itemStarts.Count) ? itemStarts[idx + 1] : mEnd;
-                    Match im = Regex.Match(lines[itStart], @"^([ \t]+)-");
-                    string propIndent = im.Groups[1].Value + "  ";
+                    string propIndent = Regex.Match(lines[itStart], @"^([ \t]+)-").Groups[1].Value + "  ";
 
-                    int thinkIdx = -1;
-                    int reasonIdx = -1;
+                    int thinkIdx = -1, reasonIdx = -1;
                     for (int j = itStart + 1; j < itEnd; j++)
                     {
                         string ln = lines[j];
-                        if (string.IsNullOrWhiteSpace(ln) || ln.TrimStart().StartsWith("#")) continue;
-                        if (GetIndentLen(ln) == propIndent.Length)
-                        {
-                            if (Regex.IsMatch(ln, @"^[ \t]+thinking:(\s*\{\s*\})?\s*(?:#.*)?$")) thinkIdx = j;
-                            else if (Regex.IsMatch(ln, @"^[ \t]+reasoning:\s*")) reasonIdx = j;
-                        }
+                        if (string.IsNullOrWhiteSpace(ln) || ln.TrimStart().StartsWith("#") || GetIndentLen(ln) != propIndent.Length) continue;
+                        if (Regex.IsMatch(ln, @"^[ \t]+thinking:(\s*\{\s*\})?\s*(?:#.*)?$")) thinkIdx = j;
+                        else if (Regex.IsMatch(ln, @"^[ \t]+reasoning:\s*")) reasonIdx = j;
                     }
 
-                    if (reasonIdx >= 0)
-                    {
-                        lines[reasonIdx] = propIndent + "reasoning: true";
-                    }
+                    if (reasonIdx >= 0) lines[reasonIdx] = propIndent + "reasoning: true";
                     else
                     {
                         lines.Insert(itStart + 1, propIndent + "reasoning: true");
@@ -1290,18 +1131,11 @@ namespace StrataControllerApp
                         propIndent + "  requiresEffort: false"
                     };
                     if (level != "auto" && level != "off" && Array.IndexOf(prof.Efforts, level) >= 0)
-                    {
                         thinkLines.Add(propIndent + "  defaultLevel: " + level);
-                    }
 
                     if (thinkIdx >= 0)
                     {
-                        int tEnd = itEnd;
-                        for (int j = thinkIdx + 1; j < itEnd; j++)
-                        {
-                            if (string.IsNullOrWhiteSpace(lines[j]) || lines[j].TrimStart().StartsWith("#")) continue;
-                            if (GetIndentLen(lines[j]) <= propIndent.Length) { tEnd = j; break; }
-                        }
+                        int tEnd = Math.Min(itEnd, FindBlockEnd(lines, thinkIdx, propIndent.Length));
                         lines.RemoveRange(thinkIdx, tEnd - thinkIdx);
                         lines.InsertRange(thinkIdx, thinkLines);
                     }
@@ -1321,26 +1155,20 @@ namespace StrataControllerApp
         private void SyncOmpConfigFiles(ModelInfo modelInfo, string level)
         {
             if (string.IsNullOrEmpty(level)) return;
-            string fam = (modelInfo != null) ? modelInfo.Family : "qwen";
-            ThinkingProfile prof = GetThinkingProfile(fam);
+            ThinkingProfile prof = GetThinkingProfile(modelInfo != null ? modelInfo.Family : "qwen");
             string lvl = ResolveThinkingChoice(level, prof);
-
-            string cfgPath = ResolveOmpFile("config");
-            string modPath = ResolveOmpFile("models");
+            string cfgPath = ResolveOmpFile("config"), modPath = ResolveOmpFile("models");
 
             try
             {
                 if (!Directory.Exists(ompAgentDir)) Directory.CreateDirectory(ompAgentDir);
                 string txt = File.Exists(cfgPath) ? File.ReadAllText(cfgPath, Encoding.UTF8) : "";
-
                 List<string> lines = new List<string>(Regex.Split(txt, @"\r?\n"));
                 while (lines.Count > 0 && lines[lines.Count - 1] == "") lines.RemoveAt(lines.Count - 1);
 
                 int mrIdx = -1;
                 for (int i = 0; i < lines.Count; i++)
-                {
                     if (Regex.IsMatch(lines[i], @"^modelRoles:\s*(?:#.*)?$")) { mrIdx = i; break; }
-                }
 
                 if (mrIdx >= 0)
                 {
@@ -1353,8 +1181,7 @@ namespace StrataControllerApp
                         if (rm.Success)
                         {
                             string baseId = Regex.Replace(rm.Groups[2].Value, @":(off|minimal|low|medium|high|xhigh|max|auto|inherit)$", "");
-                            string newVal = (lvl == "auto") ? baseId : (baseId + ":" + lvl);
-                            lines[i] = rm.Groups[1].Value + newVal + rm.Groups[3].Value;
+                            lines[i] = rm.Groups[1].Value + (lvl == "auto" ? baseId : baseId + ":" + lvl) + rm.Groups[3].Value;
                             break;
                         }
                     }
@@ -1362,29 +1189,20 @@ namespace StrataControllerApp
 
                 int dtlIdx = -1;
                 for (int i = 0; i < lines.Count; i++)
-                {
                     if (Regex.IsMatch(lines[i], @"^defaultThinkingLevel:\s*([a-zA-Z0-9_-]*)(.*)$")) { dtlIdx = i; break; }
-                }
 
-                string[] validDtl = new string[] { "minimal", "low", "medium", "high", "xhigh", "max", "auto" };
+                string[] validDtl = { "minimal", "low", "medium", "high", "xhigh", "max", "auto" };
                 if (lvl == "off")
                 {
                     if (dtlIdx >= 0)
                     {
-                        Match dm = Regex.Match(lines[dtlIdx], @"^defaultThinkingLevel:\s*([a-zA-Z0-9_-]*)(.*)$");
-                        string curDtl = dm.Groups[1].Value.ToLowerInvariant();
+                        string curDtl = Regex.Match(lines[dtlIdx], @"^defaultThinkingLevel:\s*([a-zA-Z0-9_-]*)").Groups[1].Value.ToLowerInvariant();
                         if (Array.IndexOf(validDtl, curDtl) < 0) lines[dtlIdx] = "defaultThinkingLevel: " + prof.Efforts[0];
                     }
-                    else
-                    {
-                        lines.Add("defaultThinkingLevel: " + prof.Efforts[0]);
-                    }
+                    else lines.Add("defaultThinkingLevel: " + prof.Efforts[0]);
                 }
-                else
-                {
-                    if (dtlIdx >= 0) lines[dtlIdx] = "defaultThinkingLevel: " + lvl;
-                    else lines.Add("defaultThinkingLevel: " + lvl);
-                }
+                else if (dtlIdx >= 0) lines[dtlIdx] = "defaultThinkingLevel: " + lvl;
+                else lines.Add("defaultThinkingLevel: " + lvl);
 
                 File.WriteAllText(cfgPath, string.Join("\r\n", lines) + "\r\n", Program.Utf8NoBom);
                 bool patchedModels = PatchOmpModelsYml(modPath, prof, lvl);
@@ -1406,12 +1224,10 @@ namespace StrataControllerApp
 
         private static void StopProcTree(ref Process p)
         {
-            if (p != null)
-            {
-                try { if (!p.HasExited) Program.KillPidTree(p.Id); } catch { }
-                try { p.Dispose(); } catch { }
-                p = null;
-            }
+            if (p == null) return;
+            try { if (!p.HasExited) Program.KillPidTree(p.Id); } catch { }
+            try { p.Dispose(); } catch { }
+            p = null;
         }
 
         private static Process StartInteractiveCmd(string cmdChain, string logFile, ref long posRef, bool append)
@@ -1421,15 +1237,12 @@ namespace StrataControllerApp
                 try { File.WriteAllText(logFile, "", Program.Utf8NoBom); } catch { }
                 posRef = 0;
             }
-
-            ProcessStartInfo psi = new ProcessStartInfo("cmd.exe", "/c " + cmdChain);
-            psi.UseShellExecute = false;
-            psi.CreateNoWindow = true;
-            psi.RedirectStandardInput = true;
-            Process p = new Process();
-            p.StartInfo = psi;
-            p.Start();
-            return p;
+            return Process.Start(new ProcessStartInfo("cmd.exe", "/c " + cmdChain)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardInput = true
+            });
         }
 
         private void SyncLogTail(string path, ref long lastPos, string tag, Process proc)
@@ -1440,42 +1253,38 @@ namespace StrataControllerApp
                 using (FileStream fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
                 {
                     if (fs.Length < lastPos) lastPos = 0;
-                    if (fs.Length > lastPos)
+                    if (fs.Length <= lastPos) return;
+                    fs.Seek(lastPos, SeekOrigin.Begin);
+                    using (StreamReader sr = new StreamReader(fs, Encoding.UTF8))
                     {
-                        fs.Seek(lastPos, SeekOrigin.Begin);
-                        using (StreamReader sr = new StreamReader(fs, Encoding.UTF8))
-                        {
-                            string delta = sr.ReadToEnd();
-                            lastPos = fs.Position;
-                            if (!string.IsNullOrEmpty(delta))
-                            {
-                                string norm = (delta.IndexOf('\n') >= 0) ? Regex.Replace(delta, @"(?<!\r)\n", "\r\n") : delta;
-                                txtLog.AppendText(norm);
-                                txtLog.ScrollToCaret();
-                                Program.WriteDebugFile(string.Format("[{0}] {1}", tag, delta.Trim()));
+                        string delta = sr.ReadToEnd();
+                        lastPos = fs.Position;
+                        if (string.IsNullOrEmpty(delta)) return;
 
-                                if (!isPrompting && IsProcRunning(proc) && Regex.IsMatch(delta, @"(\[y/N\]|\[Y/n\]|\(y/n\))\s*$"))
-                                {
-                                    isPrompting = true;
-                                    try
-                                    {
-                                        string[] lines = delta.Trim().Split(new string[] { "\r\n", "\n" }, StringSplitOptions.None);
-                                        int take = Math.Min(3, lines.Length);
-                                        string q = string.Join("\n", lines, lines.Length - take, take);
-                                        DialogResult ans = MessageBox.Show(
-                                            this,
-                                            q + "\n\nClick YES to send 'y' or NO to send 'n'.",
-                                            "Confirmation Required",
-                                            MessageBoxButtons.YesNo,
-                                            MessageBoxIcon.Question);
-                                        string rep = (ans == DialogResult.Yes) ? "y" : "n";
-                                        txtLog.AppendText(rep + "\r\n");
-                                        proc.StandardInput.WriteLine(rep);
-                                        proc.StandardInput.Flush();
-                                    }
-                                    finally { isPrompting = false; }
-                                }
+                        txtLog.AppendText(delta.IndexOf('\n') >= 0 ? Regex.Replace(delta, @"(?<!\r)\n", "\r\n") : delta);
+                        txtLog.ScrollToCaret();
+                        Program.WriteDebugFile(string.Format("[{0}] {1}", tag, delta.Trim()));
+
+                        if (!isPrompting && IsProcRunning(proc) && Regex.IsMatch(delta, @"(\[y/N\]|\[Y/n\]|\(y/n\))\s*$"))
+                        {
+                            isPrompting = true;
+                            try
+                            {
+                                string[] lines = delta.Trim().Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+                                int take = Math.Min(3, lines.Length);
+                                string q = string.Join("\n", lines, lines.Length - take, take);
+                                DialogResult ans = MessageBox.Show(
+                                    this,
+                                    q + "\n\nClick YES to send 'y' or NO to send 'n'.",
+                                    "Confirmation Required",
+                                    MessageBoxButtons.YesNo,
+                                    MessageBoxIcon.Question);
+                                string rep = (ans == DialogResult.Yes) ? "y" : "n";
+                                txtLog.AppendText(rep + "\r\n");
+                                proc.StandardInput.WriteLine(rep);
+                                proc.StandardInput.Flush();
                             }
+                            finally { isPrompting = false; }
                         }
                     }
                 }
@@ -1496,9 +1305,8 @@ namespace StrataControllerApp
                         long ws = p.WorkingSet64;
                         bool isMatch = !string.Equals(p.ProcessName, "strata", StringComparison.OrdinalIgnoreCase) || (ws > 250L * 1024L * 1024L);
                         if (!isMatch)
-                        {
                             try { isMatch = Regex.IsMatch(p.MainModule.FileName, "engine", RegexOptions.IgnoreCase); } catch { }
-                        }
+
                         if (isMatch && ws > bestWs)
                         {
                             if (best != null) best.Dispose();
@@ -1520,20 +1328,17 @@ namespace StrataControllerApp
             {
                 bool listening = false;
                 foreach (IPEndPoint ep in ipProps.GetActiveTcpListeners())
-                {
                     if (ep.Port == 8080) { listening = true; break; }
-                }
                 if (!listening) return false;
             }
             catch { }
 
             using (TcpClient tcp = new TcpClient())
             {
-                IAsyncResult iar = null;
                 System.Threading.WaitHandle wh = null;
                 try
                 {
-                    iar = tcp.BeginConnect("127.0.0.1", 8080, null, null);
+                    IAsyncResult iar = tcp.BeginConnect("127.0.0.1", 8080, null, null);
                     wh = iar.AsyncWaitHandle;
                     if (wh.WaitOne(100, false) && tcp.Connected)
                     {
@@ -1546,7 +1351,7 @@ namespace StrataControllerApp
                 finally
                 {
                     tcp.Close();
-                    if (wh != null) { try { wh.Close(); } catch { } }
+                    if (wh != null) try { wh.Close(); } catch { }
                 }
             }
         }
@@ -1565,10 +1370,10 @@ namespace StrataControllerApp
                 {
                     Dictionary<string, object> root = AsDict(json.DeserializeObject(sr.ReadToEnd()));
                     object dataObj;
-                    if (root != null && root.TryGetValue("data", out dataObj))
+                    if (root != null && root.TryGetValue("data", out dataObj) && dataObj is object[])
                     {
-                        object[] data = dataObj as object[];
-                        if (data != null && data.Length > 0) return GetJsonStr(AsDict(data[0]), "id");
+                        object[] data = (object[])dataObj;
+                        if (data.Length > 0) return GetJsonStr(AsDict(data[0]), "id");
                     }
                 }
             }
@@ -1580,7 +1385,8 @@ namespace StrataControllerApp
         {
             if (string.IsNullOrEmpty(loadedId) || loadedId == "strata") return "";
             ModelInfo info = ResolveModelInfo(loadedId, "");
-            if (modelMap.ContainsKey(info.Display)) return info.Display;
+            ModelInfo existing;
+            if (modelMap.TryGetValue(info.Display, out existing)) return existing.Display;
             foreach (string k in modelKeys)
             {
                 ModelInfo v = modelMap[k];
@@ -1599,9 +1405,7 @@ namespace StrataControllerApp
             SyncLogTail(tempLaunchLog, ref launchLogPos, "LAUNCH_OUT", launchProc);
             SyncLogTail(tempCmdLog,    ref cmdLogPos,    "CMD_OUT",    actionProc);
             if (!string.IsNullOrEmpty(currentEngineLog))
-            {
                 SyncLogTail(currentEngineLog, ref engineLogPos, "ENGINE_LOG", null);
-            }
 
             if (pendingOmpSync != null && actionProc != null && !IsProcRunning(actionProc))
             {
@@ -1618,13 +1422,10 @@ namespace StrataControllerApp
                     {
                         string loadedId = GetLoadedStrataModelId();
                         if (!string.IsNullOrEmpty(loadedId) && loadedId != "strata")
-                        {
                             syncInfo = ResolveModelInfo(loadedId, "");
-                        }
                     }
                     ThinkingProfile prof = GetThinkingProfile(syncInfo != null ? syncInfo.Family : "qwen");
-                    string resolvedLvl = ResolveThinkingChoice(pending.Level, prof);
-                    SyncOmpConfigFiles(syncInfo, resolvedLvl);
+                    SyncOmpConfigFiles(syncInfo, ResolveThinkingChoice(pending.Level, prof));
                     actionProc = StartInteractiveCmd(
                         string.Format("call strata connect omp --check >> \"{0}\" 2>&1", tempCmdLog),
                         tempCmdLog,
@@ -1633,13 +1434,12 @@ namespace StrataControllerApp
                 }
                 else
                 {
-                    WriteGuiLog("WARNING: 'strata connect omp --write' did not complete; skipping OMP config patch.");
+                    WriteGuiLog("WARNING: 'strata connect omp --write --yes' did not complete; skipping OMP config patch.");
                 }
             }
 
-            string statusTxt;
+            string statusTxt, procTxt;
             Color statusClr;
-            string procTxt;
 
             using (Process eng = GetEngineProc())
             {
@@ -1654,13 +1454,9 @@ namespace StrataControllerApp
                             string matchedKey = FindModelMapKey(loadedId);
                             string curSelected = cmbModel.SelectedItem != null ? cmbModel.SelectedItem.ToString() : "";
                             if (!string.IsNullOrEmpty(matchedKey) && curSelected != matchedKey)
-                            {
                                 cmbModel.SelectedItem = matchedKey;
-                            }
                             else if (loadedId != "strata")
-                            {
                                 UpdateThinkingOptions(ResolveModelInfo(loadedId, "").Family, null);
-                            }
                         }
                     }
 

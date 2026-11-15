@@ -32,4 +32,5 @@ All writing: steering, rules, skills, operator responses, and agent-facing prose
 
 ## Size
 
-Compress until removing any line loses its meaning or action.
+- Follow the idiom: "Why use many words when few do trick?" whilst ensuring sentence structure remains readable.
+- Compress until removing any line loses its meaning or action.
