@@ -531,7 +531,7 @@ namespace StrataControllerApp {
             cmbPleIo       = AddCmb(inputRow2, 0, new[] { "auto", "direct", "ram" }, "auto", ComboBoxStyle.DropDownList);
             cmbVramReserve = AddCmb(inputRow2, 1, new[] { "auto", "1088", "1280", "1536", "2048" }, "auto", ComboBoxStyle.DropDown);
             cmbThinking    = AddCmb(inputRow2, 2, new string[0], null, ComboBoxStyle.DropDownList);
-            chkOmpContinue = new CheckBox { Text = "Continue last session (-c)", Checked = false, Dock = DockStyle.Fill, AutoEllipsis = true, ForeColor = FgText, BackColor = BgDark, Margin = new Padding(6, 2, 3, 2) };
+            chkOmpContinue = new CheckBox { Text = "Continue last session (-c)", Checked = true, Dock = DockStyle.Fill, AutoEllipsis = true, ForeColor = FgText, BackColor = BgDark, Margin = new Padding(6, 2, 3, 2) };
             inputRow2.Controls.Add(chkOmpContinue, 3, 1);
             inputRow2.ResumeLayout(false);
 
@@ -715,13 +715,32 @@ namespace StrataControllerApp {
                 StopTrackedProc(ref actionProc, ref actionSink, actionStartFt);
                 string p = txtPreset.Text.Trim();
                 WriteGuiLog(string.Format("Stopping Strata engine gracefully (--preset \"{0}\")...", p));
+                Action runCleanupIfAlive = delegate {
+                    bool alive = IsProcRunning(launchProc);
+                    if (!alive) using (Process eng = GetEngineProc()) alive = (eng != null);
+                    if (alive) {
+                        actionProc = StartStrata("runtime cleanup", cmdLogPath, true, ref cmdLogPos, ref actionSink, out actionStartFt);
+                        pendingActionNext = delegate {
+                            using (Process eng = GetEngineProc()) {
+                                if (eng != null || IsProcRunning(launchProc))
+                                    WriteGuiLog("WARNING: Engine is still running after graceful stop; use 'Force Stop' if needed.");
+                            }
+                        };
+                    }
+                };
                 if (!string.IsNullOrEmpty(p)) {
                     actionProc = StartStrata(string.Format("launch --stop --preset \"{0}\"", p), cmdLogPath, false, ref cmdLogPos, ref actionSink, out actionStartFt);
                     pendingActionNext = delegate(bool ok) {
-                        if (!ok) actionProc = StartStrata("launch --stop", cmdLogPath, true, ref cmdLogPos, ref actionSink, out actionStartFt);
+                        bool alive = !ok || IsProcRunning(launchProc);
+                        if (!alive) using (Process eng = GetEngineProc()) alive = (eng != null);
+                        if (alive) {
+                            actionProc = StartStrata("launch --stop", cmdLogPath, true, ref cmdLogPos, ref actionSink, out actionStartFt);
+                            pendingActionNext = delegate { runCleanupIfAlive(); };
+                        }
                     };
                 } else {
                     actionProc = StartStrata("launch --stop", cmdLogPath, false, ref cmdLogPos, ref actionSink, out actionStartFt);
+                    pendingActionNext = delegate { runCleanupIfAlive(); };
                 }
             };
             btnForceStop.Click += delegate {
