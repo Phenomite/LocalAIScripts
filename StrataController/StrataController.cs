@@ -4,25 +4,24 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Net;
+using System.Net.Http;
 using System.Net.NetworkInformation;
-using System.Net.Sockets;
-using System.Reflection;
-using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
-[assembly: AssemblyTitle("Strata CLI and OMP Settings Controller")]
-[assembly: AssemblyDescription("Controller and configuration utility for Strata inference engine and Oh-My-Pi")]
-[assembly: AssemblyConfiguration("Release")]
-[assembly: AssemblyCompany("Phenomite")]
-[assembly: AssemblyProduct("Strata CLI and OMP Settings Controller")]
-[assembly: AssemblyCopyright("Copyright (c) 2026 Phenomite")]
-[assembly: AssemblyVersion("1.0.0.2")]
-[assembly: AssemblyFileVersion("1.0.0.2")]
-[assembly: ComVisible(false)]
+[assembly: System.Reflection.AssemblyTitle("Strata CLI and OMP Settings Controller")]
+[assembly: System.Reflection.AssemblyDescription("Controller and configuration utility for Strata inference engine and Oh-My-Pi")]
+[assembly: System.Reflection.AssemblyConfiguration("Release")]
+[assembly: System.Reflection.AssemblyCompany("Phenomite")]
+[assembly: System.Reflection.AssemblyProduct("Strata Controller")]
+[assembly: System.Reflection.AssemblyCopyright("Copyright (c) 2026 Phenomite")]
+[assembly: System.Reflection.AssemblyVersion("1.0.0.2")]
+[assembly: System.Reflection.AssemblyFileVersion("1.0.0.2")]
+[assembly: System.Reflection.AssemblyInformationalVersion("1.0.2")]
+[assembly: System.Runtime.InteropServices.ComVisible(false)]
 
 namespace StrataControllerApp {
     internal sealed class ModelInfo { public string Family, FamilyTitle, Model, Display; }
@@ -48,28 +47,6 @@ namespace StrataControllerApp {
     }
 
     internal static class Program {
-        private const uint TH32CS_SNAPPROCESS = 0x00000002;
-
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-        private struct PROCESSENTRY32 {
-            public uint dwSize, cntUsage, th32ProcessID;
-            public IntPtr th32DefaultHeapID;
-            public uint th32ModuleID, cntThreads, th32ParentProcessID;
-            public int pcPriClassBase;
-            public uint dwFlags;
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
-            public string szExeFile;
-        }
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern IntPtr CreateToolhelp32Snapshot(uint dwFlags, uint th32ProcessID);
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        private static extern bool Process32FirstW(IntPtr hSnapshot, ref PROCESSENTRY32 lppe);
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        private static extern bool Process32NextW(IntPtr hSnapshot, ref PROCESSENTRY32 lppe);
-        [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern bool CloseHandle(IntPtr hObject);
-
         public static readonly Encoding Utf8NoBom = new UTF8Encoding(false);
         public static readonly string LogsDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"Strata\logs");
         private static readonly string PidFilePath = Path.Combine(LogsDir, "StrataController.pids");
@@ -137,88 +114,50 @@ namespace StrataControllerApp {
             }
         }
 
-        private static Dictionary<int, List<int>> GetPpidMap() {
-            Dictionary<int, List<int>> map = new Dictionary<int, List<int>>();
-            IntPtr snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-            if (snap == IntPtr.Zero || snap == new IntPtr(-1)) return map;
-            try {
-                PROCESSENTRY32 pe = new PROCESSENTRY32 { dwSize = (uint)Marshal.SizeOf(typeof(PROCESSENTRY32)) };
-                if (Process32FirstW(snap, ref pe)) {
-                    do {
-                        int pid = (int)pe.th32ProcessID, ppid = (int)pe.th32ParentProcessID;
-                        if (pid > 0 && ppid > 0 && pid != ppid) {
-                            List<int> list;
-                            if (!map.TryGetValue(ppid, out list)) map[ppid] = list = new List<int>();
-                            list.Add(pid);
-                        }
-                    } while (Process32NextW(snap, ref pe));
-                }
-            } finally { CloseHandle(snap); }
-            return map;
-        }
-
-        private static void KillTreeFromMap(int rootPid, long rootStartFt, Dictionary<int, List<int>> children) {
-            if (rootPid <= 0 || rootPid == Process.GetCurrentProcess().Id) return;
-            if (rootStartFt > 0 && !IsSameLiveProcess(rootPid, rootStartFt)) return;
-            Queue<int> q = new Queue<int>();
-            HashSet<int> seen = new HashSet<int>();
-            List<int> toKill = new List<int>();
-            q.Enqueue(rootPid);
-            seen.Add(rootPid);
-            while (q.Count > 0) {
-                int cur = q.Dequeue();
-                toKill.Add(cur);
-                List<int> kids;
-                if (children != null && children.TryGetValue(cur, out kids)) {
-                    foreach (int kid in kids) if (seen.Add(kid)) q.Enqueue(kid);
-                }
-            }
-            foreach (int pid in toKill) {
+        public static void StopTrackedProcess(int pid, long expectedStartFt) {
+            if (IsSameLiveProcess(pid, expectedStartFt)) {
                 try {
                     using (Process p = Process.GetProcessById(pid)) {
-                        if (!p.HasExited && (rootStartFt <= 0 || pid == rootPid || p.StartTime.ToFileTimeUtc() >= rootStartFt))
-                            p.Kill();
+                        if (!p.HasExited && (expectedStartFt <= 0 || p.StartTime.ToFileTimeUtc() == expectedStartFt)) p.Kill();
                     }
                 } catch { }
             }
+            UpdatePidFile(0, 0, pid);
         }
 
-        public static void KillProcessTree(int rootPid, long expectedStartFt) {
-            KillTreeFromMap(rootPid, expectedStartFt, GetPpidMap());
-            UpdatePidFile(0, 0, rootPid);
-        }
-
-        public static bool KillTrackedChildren() {
-            bool killedAny = false;
+        public static bool StopTrackedProcesses() {
+            bool stoppedAny = false;
             lock (PidLock) {
                 if (!File.Exists(PidFilePath)) return false;
                 try {
-                    string[] raw = File.ReadAllLines(PidFilePath, Utf8NoBom);
-                    Dictionary<int, List<int>> map = null;
-                    foreach (string ln in raw) {
+                    foreach (string ln in File.ReadAllLines(PidFilePath, Utf8NoBom)) {
                         string[] parts = ln.Split('|');
                         int pid; long ft;
                         if (parts.Length == 2 && int.TryParse(parts[0], out pid) && long.TryParse(parts[1], out ft) && IsSameLiveProcess(pid, ft)) {
-                            if (map == null) map = GetPpidMap();
-                            KillTreeFromMap(pid, ft, map);
-                            killedAny = true;
+                            try {
+                                using (Process p = Process.GetProcessById(pid)) {
+                                    if (!p.HasExited && p.StartTime.ToFileTimeUtc() == ft) { p.Kill(); stoppedAny = true; }
+                                }
+                            } catch { }
                         }
                     }
                     File.WriteAllText(PidFilePath, "", Utf8NoBom);
                 } catch { }
             }
-            return killedAny;
+            return stoppedAny;
         }
     }
 
     internal sealed class StrataControllerForm : Form {
+        private const string LocalModelsUrl = "http://127.0.0.1:8080/v1/models";
         private static readonly string[] EngineProcNames = { "strata-dsv41", "strata-server", "strata" };
-        private static readonly string[] KillProcNames   = { "strata-dsv41", "strata-server", "strata-vision", "strata" };
+        private static readonly string[] StopProcNames   = { "strata-dsv41", "strata-server", "strata-vision", "strata" };
         private static readonly Dictionary<string, string> FamilyTitles = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) {
             { "deepseek41", "DeepSeek V4.1-Flash" }, { "coder", "Qwen3.8 Coder" }, { "gyro", "Qwen3.8 Gyro" },
             { "swift", "Qwen3.8 Swift 1.5" }, { "unsloth", "Qwen3.8 Unsloth" }, { "nvfp4", "Qwen3.8 NVFP4" }, { "qwen36", "Qwen3.6-35B-A3B" }
         };
 
+        private static readonly HttpClient LocalHttp = new HttpClient(new HttpClientHandler { UseProxy = false }) { Timeout = TimeSpan.FromMilliseconds(500) };
         private static readonly Color BgDark = Color.FromArgb(24, 24, 28), BgPanel = Color.FromArgb(34, 34, 40), BgInput = Color.FromArgb(45, 45, 54);
         private static readonly Color FgText = Color.FromArgb(235, 235, 240), FgMuted = Color.FromArgb(165, 165, 180);
         private static readonly Color ColorServing = Color.FromArgb(65, 215, 95), ColorLoading = Color.FromArgb(245, 185, 45), ColorStopped = Color.FromArgb(230, 75, 75);
@@ -239,7 +178,7 @@ namespace StrataControllerApp {
         private ComboBox cmbModel, cmbCtx, cmbSpeed, cmbPleIo, cmbVramReserve, cmbThinking;
         private CheckBox chkOmpContinue;
         private TextBox txtPreset, txtLog;
-        private Button btnStart, btnStop, btnKill, btnTune, btnWireOmp, btnRunOmp, btnOpenLog;
+        private Button btnStart, btnStop, btnForceStop, btnTune, btnWireOmp, btnRunOmp, btnOpenLog;
         private System.Windows.Forms.Timer pollTimer;
 
         private bool suppressThinkingSync, isPrompting, isPolling;
@@ -317,35 +256,40 @@ namespace StrataControllerApp {
         private static string FindCommandOnPath(string command) {
             string pathEnv = Environment.GetEnvironmentVariable("PATH") ?? "";
             string[] exts = (Environment.GetEnvironmentVariable("PATHEXT") ?? ".COM;.EXE;.BAT;.CMD").Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+            bool hasExt = Path.HasExtension(command);
             foreach (string dir in pathEnv.Split(';')) {
                 string trimmed = (dir ?? "").Trim().Trim('"');
                 if (string.IsNullOrEmpty(trimmed)) continue;
                 try {
                     string direct = Path.Combine(trimmed, command);
-                    if (File.Exists(direct)) return direct;
-                    foreach (string ext in exts) {
-                        string candidate = direct + ext.Trim();
-                        if (File.Exists(candidate)) return candidate;
+                    if (hasExt) { if (File.Exists(direct)) return direct; }
+                    else {
+                        foreach (string ext in exts) {
+                            string candidate = direct + ext.Trim();
+                            if (File.Exists(candidate)) return candidate;
+                        }
+                        if (File.Exists(direct)) return direct;
                     }
                 } catch { }
             }
             return null;
         }
 
-        private static ProcessStartInfo BuildToolStartInfo(string toolNameOrPath, string args, bool redirectInput) {
+        private static ProcessStartInfo BuildToolStartInfo(string toolNameOrPath, string args, bool interactiveWindow, bool redirectInput, string workDir) {
             string resolved = File.Exists(toolNameOrPath) ? toolNameOrPath : (FindCommandOnPath(toolNameOrPath) ?? toolNameOrPath);
             bool isBatch = resolved.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase) || resolved.EndsWith(".bat", StringComparison.OrdinalIgnoreCase);
             string file = isBatch ? (Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe") : resolved;
-            string finalArgs = isBatch ? string.Format("/d /c call \"{0}\" {1}", resolved, args) : args;
-            return new ProcessStartInfo(file, finalArgs) {
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardInput = redirectInput,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                StandardOutputEncoding = Encoding.UTF8,
-                StandardErrorEncoding = Encoding.UTF8
-            };
+            string finalArgs = isBatch ? string.Format("/d /c call \"{0}\"{1}", resolved, string.IsNullOrEmpty(args) ? "" : " " + args) : args;
+            ProcessStartInfo psi = new ProcessStartInfo(file, finalArgs) { UseShellExecute = false, CreateNoWindow = !interactiveWindow };
+            if (!string.IsNullOrEmpty(workDir)) psi.WorkingDirectory = workDir;
+            if (!interactiveWindow) {
+                psi.RedirectStandardInput = redirectInput;
+                psi.RedirectStandardOutput = true;
+                psi.RedirectStandardError = true;
+                psi.StandardOutputEncoding = Encoding.UTF8;
+                psi.StandardErrorEncoding = Encoding.UTF8;
+            }
+            return psi;
         }
 
         private string ResolveOmpFile(string baseName) {
@@ -416,13 +360,13 @@ namespace StrataControllerApp {
             string strataExe = FindCommandOnPath("strata");
             if (!string.IsNullOrEmpty(strataExe)) {
                 try {
-                    using (Process p = Process.Start(BuildToolStartInfo(strataExe, "models list --installed --output json", false))) {
+                    using (Process p = Process.Start(BuildToolStartInfo(strataExe, "models list --installed --output json", false, false, null))) {
                         if (p != null) {
                             StringBuilder outBuf = new StringBuilder();
                             Thread tOut = new Thread(delegate() { try { outBuf.Append(p.StandardOutput.ReadToEnd()); } catch { } }) { IsBackground = true };
                             Thread tErr = new Thread(delegate() { try { p.StandardError.ReadToEnd(); } catch { } }) { IsBackground = true };
                             tOut.Start(); tErr.Start();
-                            if (!p.WaitForExit(8000)) { try { Program.KillProcessTree(p.Id, 0); } catch { } }
+                            if (!p.WaitForExit(8000)) { try { if (!p.HasExited) p.Kill(); } catch { } }
                             tOut.Join(500);
                             string cliJson = outBuf.ToString();
                             int brace = cliJson.IndexOf('{'), bracket = cliJson.IndexOf('[');
@@ -587,18 +531,18 @@ namespace StrataControllerApp {
             cmbPleIo       = AddCmb(inputRow2, 0, new[] { "auto", "direct", "ram" }, "auto", ComboBoxStyle.DropDownList);
             cmbVramReserve = AddCmb(inputRow2, 1, new[] { "auto", "1088", "1280", "1536", "2048" }, "auto", ComboBoxStyle.DropDown);
             cmbThinking    = AddCmb(inputRow2, 2, new string[0], null, ComboBoxStyle.DropDownList);
-            chkOmpContinue = new CheckBox { Text = "Continue last session (-c)", Checked = true, Dock = DockStyle.Fill, AutoEllipsis = true, ForeColor = FgText, BackColor = BgDark, Margin = new Padding(6, 2, 3, 2) };
+            chkOmpContinue = new CheckBox { Text = "Continue last session (-c)", Checked = false, Dock = DockStyle.Fill, AutoEllipsis = true, ForeColor = FgText, BackColor = BgDark, Margin = new Padding(6, 2, 3, 2) };
             inputRow2.Controls.Add(chkOmpContinue, 3, 1);
             inputRow2.ResumeLayout(false);
 
             TableLayoutPanel btnGrid = NewGrid(50, new[] { 14f, 16f, 13f, 14f, 13f, 14f, 16f }, new[] { 100f }, BgDark, new Padding(12, 2, 12, 8));
-            btnStart   = AddBtn(btnGrid, "Start Engine",    0, Color.FromArgb(35, 134, 54),  fontBold);
-            btnStop    = AddBtn(btnGrid, "Stop (Graceful)", 1, Color.FromArgb(180, 105, 14), fontBold);
-            btnKill    = AddBtn(btnGrid, "Force Kill",      2, Color.FromArgb(190, 40, 40),  fontBold);
-            btnTune    = AddBtn(btnGrid, "Tune Model",      3, Color.FromArgb(115, 75, 180), fontBold);
-            btnWireOmp = AddBtn(btnGrid, "Sync omp",        4, Color.FromArgb(45, 105, 190), fontUI);
-            btnRunOmp  = AddBtn(btnGrid, "Launch omp",      5, BgPanel,                      fontUI);
-            btnOpenLog = AddBtn(btnGrid, "Open Debug Log",  6, BgPanel,                      fontUI);
+            btnStart     = AddBtn(btnGrid, "Start Engine",    0, Color.FromArgb(35, 134, 54),  fontBold);
+            btnStop      = AddBtn(btnGrid, "Stop (Graceful)", 1, Color.FromArgb(180, 105, 14), fontBold);
+            btnForceStop = AddBtn(btnGrid, "Force Stop",      2, Color.FromArgb(190, 40, 40),  fontBold);
+            btnTune      = AddBtn(btnGrid, "Tune Model",      3, Color.FromArgb(115, 75, 180), fontBold);
+            btnWireOmp   = AddBtn(btnGrid, "Sync omp",        4, Color.FromArgb(45, 105, 190), fontUI);
+            btnRunOmp    = AddBtn(btnGrid, "Launch omp",      5, BgPanel,                      fontUI);
+            btnOpenLog   = AddBtn(btnGrid, "Open Debug Log",  6, BgPanel,                      fontUI);
             btnGrid.ResumeLayout(false);
 
             Panel logPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(12, 4, 12, 12) };
@@ -708,20 +652,40 @@ namespace StrataControllerApp {
             return true;
         }
 
-        private bool KillAllStrata(bool logOutput) {
-            bool killedAny = Program.KillTrackedChildren();
-            foreach (string name in KillProcNames) {
+        private bool ForceStopAllStrata(bool logOutput) {
+            bool stoppedAny = Program.StopTrackedProcesses();
+            foreach (string name in StopProcNames) {
                 foreach (Process p in Process.GetProcessesByName(name)) {
-                    killedAny = true;
-                    if (logOutput) WriteGuiLog(string.Format("Terminating {0} (PID {1})...", p.ProcessName, p.Id));
+                    stoppedAny = true;
+                    if (logOutput) WriteGuiLog(string.Format("Stopping {0} (PID {1})...", p.ProcessName, p.Id));
                     try { if (!p.HasExited) p.Kill(); } catch { }
                     finally { p.Dispose(); }
                 }
             }
             pendingOmpSync = null; pendingActionNext = null; pendingLaunchNext = null; lastSyncedEnginePid = -1;
-            StopProcTree(ref launchProc, ref launchSink, launchStartFt); launchStartFt = 0;
-            StopProcTree(ref actionProc, ref actionSink, actionStartFt); actionStartFt = 0;
-            return killedAny;
+            StopTrackedProc(ref launchProc, ref launchSink, launchStartFt); launchStartFt = 0;
+            StopTrackedProc(ref actionProc, ref actionSink, actionStartFt); actionStartFt = 0;
+            return stoppedAny;
+        }
+
+        private void ShowDebugLogDialog() {
+            string content;
+            try { content = File.Exists(Program.DebugLogPath) ? File.ReadAllText(Program.DebugLogPath, Encoding.UTF8) : "(Debug log file not found)"; }
+            catch (Exception ex) { content = "Could not read debug log: " + ex.Message; }
+            using (Form dlg = new Form {
+                Text = "Debug Log - " + Program.DebugLogPath, Size = new Size(820, 540), StartPosition = FormStartPosition.CenterParent,
+                BackColor = BgDark, ForeColor = FgText, Font = fontUI, KeyPreview = true, Icon = appIcon
+            }) {
+                TextBox box = new TextBox {
+                    Multiline = true, ReadOnly = true, WordWrap = false, ScrollBars = ScrollBars.Both, Dock = DockStyle.Fill,
+                    MaxLength = int.MaxValue, Font = fontMono, BorderStyle = BorderStyle.FixedSingle,
+                    BackColor = Color.FromArgb(16, 16, 20), ForeColor = Color.FromArgb(200, 215, 225), Text = content
+                };
+                dlg.Controls.Add(box);
+                dlg.KeyDown += delegate(object s, KeyEventArgs e) { if (e.KeyCode == Keys.Escape) dlg.Close(); };
+                dlg.Shown += delegate { box.SelectionStart = box.TextLength; box.ScrollToCaret(); };
+                dlg.ShowDialog(this);
+            }
         }
 
         private void WireEvents() {
@@ -748,7 +712,7 @@ namespace StrataControllerApp {
             };
             btnStop.Click += delegate {
                 pendingOmpSync = null; pendingActionNext = null;
-                StopProcTree(ref actionProc, ref actionSink, actionStartFt);
+                StopTrackedProc(ref actionProc, ref actionSink, actionStartFt);
                 string p = txtPreset.Text.Trim();
                 WriteGuiLog(string.Format("Stopping Strata engine gracefully (--preset \"{0}\")...", p));
                 if (!string.IsNullOrEmpty(p)) {
@@ -760,15 +724,16 @@ namespace StrataControllerApp {
                     actionProc = StartStrata("launch --stop", cmdLogPath, false, ref cmdLogPos, ref actionSink, out actionStartFt);
                 }
             };
-            btnKill.Click += delegate {
-                WriteGuiLog("Force-killing strata processes...");
-                bool killedAny = KillAllStrata(true);
-                WriteGuiLog(killedAny ? "Engine terminated. VRAM and System RAM freed." : "No running strata process found.");
+            btnForceStop.Click += delegate {
+                WriteGuiLog("Force-stopping strata processes...");
+                bool stoppedAny = ForceStopAllStrata(true);
+                WriteGuiLog(stoppedAny ? "Engine terminated. VRAM and System RAM freed." : "No running strata process found.");
             };
             btnWireOmp.Click += delegate {
                 pendingOmpSync = null; pendingActionNext = null;
-                StopProcTree(ref actionProc, ref actionSink, actionStartFt);
-                if (!TestPort8080()) {
+                StopTrackedProc(ref actionProc, ref actionSink, actionStartFt);
+                string ignored;
+                if (!ProbeLocalServer(out ignored)) {
                     WriteGuiLog("WARNING: Server is not responding on http://127.0.0.1:8080; start the engine before clicking 'Sync omp'.");
                     return;
                 }
@@ -783,6 +748,12 @@ namespace StrataControllerApp {
                 actionProc = StartStrata("connect omp --write --yes", cmdLogPath, false, ref cmdLogPos, ref actionSink, out actionStartFt);
             };
             btnRunOmp.Click += delegate {
+                string ompPath = FindCommandOnPath("omp");
+                if (string.IsNullOrEmpty(ompPath)) {
+                    WriteGuiLog("ERROR: 'omp' command was not found on PATH.");
+                    MessageBox.Show(this, "'omp' was not found on PATH.", "Missing Tool", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
                 ModelInfo sel = GetSelectedModelInfo();
                 string lvl = cmbThinking.SelectedItem != null ? cmbThinking.SelectedItem.ToString() : "";
                 string resolvedLvl = !string.IsNullOrEmpty(lvl) ? ResolveThinkingChoice(lvl, GetThinkingProfile(sel != null ? sel.Family : "qwen")) : "";
@@ -791,15 +762,12 @@ namespace StrataControllerApp {
                 using (FolderBrowserDialog dlg = new FolderBrowserDialog { Description = "Select workspace folder for omp (Cancel for user home):" }) {
                     if (dlg.ShowDialog(this) == DialogResult.OK) dir = dlg.SelectedPath;
                 }
-                string ompCmd = "omp" + (chkOmpContinue.Checked ? " -c" : "") + (!string.IsNullOrEmpty(resolvedLvl) ? " --thinking " + resolvedLvl : "");
-                WriteGuiLog(string.Format("Launching '{0}' in: {1}", ompCmd, dir));
-                try { using (Process p = Process.Start(new ProcessStartInfo("cmd.exe", "/k " + ompCmd) { WorkingDirectory = dir })) { } }
+                string ompArgs = ((chkOmpContinue.Checked ? "-c " : "") + (!string.IsNullOrEmpty(resolvedLvl) ? "--thinking " + resolvedLvl : "")).Trim();
+                WriteGuiLog(string.Format("Launching 'omp{0}' in: {1}", string.IsNullOrEmpty(ompArgs) ? "" : " " + ompArgs, dir));
+                try { using (Process p = Process.Start(BuildToolStartInfo(ompPath, ompArgs, true, false, dir))) { } }
                 catch (Exception ex) { WriteGuiLog("ERROR launching omp: " + ex.Message); }
             };
-            btnOpenLog.Click += delegate {
-                try { using (Process p = Process.Start("notepad.exe", "\"" + Program.DebugLogPath + "\"")) { } }
-                catch (Exception ex) { WriteGuiLog("ERROR opening log: " + ex.Message); }
-            };
+            btnOpenLog.Click += delegate { ShowDebugLogDialog(); };
         }
 
         private void InvokeStrataLaunch(string extraArgs, string actionLabel, bool stopFirst) {
@@ -813,7 +781,7 @@ namespace StrataControllerApp {
             if (!TryBuildEngineOptionArgs(out optArgs, out optErr)) { MessageBox.Show(this, optErr, "Invalid Option"); return; }
 
             pendingLaunchNext = null;
-            StopProcTree(ref launchProc, ref launchSink, launchStartFt);
+            StopTrackedProc(ref launchProc, ref launchSink, launchStartFt);
             lastSyncedEnginePid = -1;
             currentEngineLog = Path.Combine(launchDir, preset + ".engine.log");
             if (File.Exists(currentEngineLog)) try { File.WriteAllText(currentEngineLog, "", Program.Utf8NoBom); } catch { }
@@ -1062,10 +1030,10 @@ namespace StrataControllerApp {
             try { return !p.HasExited; } catch { return false; }
         }
 
-        private static void StopProcTree(ref Process p, ref LogSink sink, long startFt) {
+        private static void StopTrackedProc(ref Process p, ref LogSink sink, long startFt) {
             if (sink != null) { sink.Cancelled = true; sink = null; }
             if (p == null) return;
-            try { if (!p.HasExited) Program.KillProcessTree(p.Id, startFt); else Program.UpdatePidFile(0, 0, p.Id); } catch { }
+            try { Program.StopTrackedProcess(p.Id, startFt); } catch { }
             try { p.Dispose(); } catch { }
             p = null;
         }
@@ -1104,7 +1072,7 @@ namespace StrataControllerApp {
             LogSink sink = new LogSink();
             activeSink = sink;
             try {
-                Process p = Process.Start(BuildToolStartInfo("strata", args, true));
+                Process p = Process.Start(BuildToolStartInfo("strata", args, false, true, null));
                 if (p == null) return null;
                 try { if (!p.HasExited) { startFt = p.StartTime.ToFileTimeUtc(); Program.UpdatePidFile(p.Id, startFt, 0); } } catch { }
                 sink.OutThread = StartStreamPump(p.StandardOutput.BaseStream, logFile, sink);
@@ -1169,39 +1137,29 @@ namespace StrataControllerApp {
             return best;
         }
 
-        private bool TestPort8080() {
+        private bool ProbeLocalServer(out string loadedId) {
+            loadedId = "";
             try {
                 bool listening = false;
                 foreach (IPEndPoint ep in ipProps.GetActiveTcpListeners()) if (ep.Port == 8080) { listening = true; break; }
                 if (!listening) return false;
             } catch { }
-            using (TcpClient tcp = new TcpClient()) {
-                WaitHandle wh = null;
-                try {
-                    IAsyncResult iar = tcp.BeginConnect("127.0.0.1", 8080, null, null);
-                    wh = iar.AsyncWaitHandle;
-                    if (wh.WaitOne(100, false) && tcp.Connected) { try { tcp.EndConnect(iar); } catch { } return true; }
-                    return false;
-                } catch { return false; }
-                finally { tcp.Close(); if (wh != null) try { wh.Close(); } catch { } }
-            }
-        }
-
-        private string GetLoadedStrataModelId() {
             try {
-                HttpWebRequest req = (HttpWebRequest)WebRequest.Create("http://127.0.0.1:8080/v1/models");
-                req.Method = "GET"; req.Timeout = 500; req.ReadWriteTimeout = 500; req.Proxy = null;
-                using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
-                using (StreamReader sr = new StreamReader(resp.GetResponseStream(), Encoding.UTF8)) {
-                    Dictionary<string, object> root = AsDict(json.DeserializeObject(sr.ReadToEnd()));
-                    object dataObj;
-                    if (root != null && root.TryGetValue("data", out dataObj) && dataObj is object[]) {
-                        object[] data = (object[])dataObj;
-                        if (data.Length > 0) return GetJsonStr(AsDict(data[0]), "id");
+                using (CancellationTokenSource cts = new CancellationTokenSource(500))
+                using (HttpResponseMessage resp = LocalHttp.GetAsync(LocalModelsUrl, cts.Token).ConfigureAwait(false).GetAwaiter().GetResult()) {
+                    if ((int)resp.StatusCode >= 500) return false;
+                    if (resp.IsSuccessStatusCode) {
+                        string body = resp.Content.ReadAsStringAsync().ConfigureAwait(false).GetAwaiter().GetResult();
+                        Dictionary<string, object> root = AsDict(json.DeserializeObject(body));
+                        object dataObj;
+                        if (root != null && root.TryGetValue("data", out dataObj) && dataObj is object[]) {
+                            object[] data = (object[])dataObj;
+                            if (data.Length > 0) loadedId = GetJsonStr(AsDict(data[0]), "id");
+                        }
                     }
+                    return true;
                 }
-            } catch { }
-            return "";
+            } catch { return false; }
         }
 
         private string FindModelMapKey(string loadedId) {
@@ -1247,7 +1205,8 @@ namespace StrataControllerApp {
                             try { File.WriteAllText(pending.ConfigPath, pending.OriginalConfigText, Program.Utf8NoBom); } catch { }
                         if (exitOk) {
                             ModelInfo syncInfo = pending.Info;
-                            string loadedId = TestPort8080() ? GetLoadedStrataModelId() : "";
+                            string loadedId;
+                            ProbeLocalServer(out loadedId);
                             if (!string.IsNullOrEmpty(loadedId) && loadedId != "strata") syncInfo = ResolveModelInfo(loadedId, "");
                             string modYmlId = GetModelIdFromModelsYml(ResolveOmpFile("models"), "strata");
                             string targetId = !string.IsNullOrEmpty(modYmlId) ? modYmlId : (!string.IsNullOrEmpty(loadedId) ? loadedId : "strata");
@@ -1267,19 +1226,16 @@ namespace StrataControllerApp {
 
                 if (!string.IsNullOrEmpty(currentEngineLog)) SyncLogTail(currentEngineLog, ref engineLogPos, "ENGINE_LOG", null);
 
-                string statusTxt, procTxt;
+                string statusTxt, procTxt, loadedModelId = "";
                 Color statusClr;
                 using (Process eng = GetEngineProc()) {
-                    if (eng != null && TestPort8080()) {
-                        if (lastSyncedEnginePid != eng.Id) {
-                            string loadedId = GetLoadedStrataModelId();
-                            if (!string.IsNullOrEmpty(loadedId)) {
-                                lastSyncedEnginePid = eng.Id;
-                                string matchedKey = FindModelMapKey(loadedId);
-                                string curSelected = cmbModel.SelectedItem != null ? cmbModel.SelectedItem.ToString() : "";
-                                if (!string.IsNullOrEmpty(matchedKey) && curSelected != matchedKey) cmbModel.SelectedItem = matchedKey;
-                                else if (loadedId != "strata") UpdateThinkingOptions(ResolveModelInfo(loadedId, "").Family, null);
-                            }
+                    if (eng != null && ProbeLocalServer(out loadedModelId)) {
+                        if (lastSyncedEnginePid != eng.Id && !string.IsNullOrEmpty(loadedModelId)) {
+                            lastSyncedEnginePid = eng.Id;
+                            string matchedKey = FindModelMapKey(loadedModelId);
+                            string curSelected = cmbModel.SelectedItem != null ? cmbModel.SelectedItem.ToString() : "";
+                            if (!string.IsNullOrEmpty(matchedKey) && curSelected != matchedKey) cmbModel.SelectedItem = matchedKey;
+                            else if (loadedModelId != "strata") UpdateThinkingOptions(ResolveModelInfo(loadedModelId, "").Family, null);
                         }
                         statusTxt = "[SERVING - READY]";
                         statusClr = ColorServing;
@@ -1311,14 +1267,14 @@ namespace StrataControllerApp {
             using (Process eng = GetEngineProc()) {
                 if (eng != null || IsProcRunning(launchProc)) {
                     DialogResult ans = MessageBox.Show(this,
-                        "Strata Engine is running.\n\nYES = Kill engine before exiting\nNO = Leave running in background\nCANCEL = Stay in controller",
+                        "Strata Engine is running.\n\nYES = Stop engine before exiting\nNO = Leave running in background\nCANCEL = Stay in controller",
                         "Strata Engine Running", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
                     if (ans == DialogResult.Cancel) { e.Cancel = true; return; }
-                    if (ans == DialogResult.Yes) KillAllStrata(false);
+                    if (ans == DialogResult.Yes) ForceStopAllStrata(false);
                 }
             }
             pendingOmpSync = null; pendingActionNext = null; pendingLaunchNext = null;
-            StopProcTree(ref actionProc, ref actionSink, actionStartFt);
+            StopTrackedProc(ref actionProc, ref actionSink, actionStartFt);
             if (pollTimer != null) pollTimer.Stop();
             base.OnFormClosing(e);
         }
