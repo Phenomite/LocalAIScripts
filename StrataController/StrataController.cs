@@ -166,6 +166,7 @@ namespace StrataControllerApp {
         private readonly Font fontStatus = new Font("Segoe UI Semibold", 11f), fontMono = new Font("Consolas", 9f);
         private readonly JavaScriptSerializer json = new JavaScriptSerializer();
         private readonly IPGlobalProperties ipProps = IPGlobalProperties.GetIPGlobalProperties();
+        private readonly Microsoft.VisualBasic.Devices.ComputerInfo compInfo = new Microsoft.VisualBasic.Devices.ComputerInfo();
 
         private readonly string strataLocalDir, launchDir, installDir, ompAgentDir, launchLogPath, cmdLogPath;
         private readonly Dictionary<string, ModelInfo> modelMap = new Dictionary<string, ModelInfo>(StringComparer.OrdinalIgnoreCase);
@@ -1193,6 +1194,17 @@ namespace StrataControllerApp {
             return "";
         }
 
+        private string GetRamText() {
+            try {
+                ulong total = compInfo.TotalPhysicalMemory, avail = compInfo.AvailablePhysicalMemory;
+                if (total > 0) {
+                    ulong used = total > avail ? total - avail : 0UL;
+                    return string.Format("{0:0.0}/{1:0.0} GB ({2}%)", used / 1073741824.0, total / 1073741824.0, (int)Math.Round(used * 100.0 / total));
+                }
+            } catch { }
+            return "N/A";
+        }
+
         private void OnPollTimerTick(object sender, EventArgs e) {
             if (isPolling || isPrompting) return;
             isPolling = true;
@@ -1258,9 +1270,9 @@ namespace StrataControllerApp {
                         }
                         statusTxt = "[SERVING - READY]";
                         statusClr = ColorServing;
-                        procTxt = string.Format("{0}.exe (PID {1}) | RAM: {2:0.0} GB | http://127.0.0.1:8080/v1", eng.ProcessName, eng.Id, eng.WorkingSet64 / (1024.0 * 1024.0 * 1024.0));
+                        procTxt = string.Format("{0}.exe (PID {1}) | RAM: {2} | http://127.0.0.1:8080/v1", eng.ProcessName, eng.Id, GetRamText());
                     } else if (eng != null || IsProcRunning(launchProc) || pendingLaunchNext != null) {
-                        string info = (eng != null) ? string.Format("PID {0} | RAM: {1:0.0} GB", eng.Id, eng.WorkingSet64 / (1024.0 * 1024.0 * 1024.0)) : "Initializing...";
+                        string info = (eng != null) ? string.Format("PID {0} | RAM: {1}", eng.Id, GetRamText()) : "Initializing...";
                         statusTxt = "[LOADING MODEL...]";
                         statusClr = ColorLoading;
                         procTxt = "Starting engine (" + info + ")";
