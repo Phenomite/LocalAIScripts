@@ -2,13 +2,16 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Net.NetworkInformation;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
@@ -18,18 +21,28 @@ using System.Windows.Forms;
 [assembly: System.Reflection.AssemblyCompany("Phenomite")]
 [assembly: System.Reflection.AssemblyProduct("Strata Controller")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright (c) 2026 Phenomite")]
-[assembly: System.Reflection.AssemblyVersion("1.0.0.2")]
-[assembly: System.Reflection.AssemblyFileVersion("1.0.0.2")]
-[assembly: System.Reflection.AssemblyInformationalVersion("1.0.2")]
-[assembly: System.Runtime.InteropServices.ComVisible(false)]
+[assembly: System.Reflection.AssemblyVersion("1.0.0.3")]
+[assembly: System.Reflection.AssemblyFileVersion("1.0.0.3")]
+[assembly: System.Reflection.AssemblyInformationalVersion("1.0.3")]
+[assembly: ComVisible(false)]
 
 namespace StrataControllerApp {
+    internal enum StatusState { Checking, Serving, Loading, Stopped }
+    internal enum PillKind { Neutral, Ok, Warn, Err }
+    internal enum BtnTone { Neutral, Primary, Accent, Warning, Danger }
+
     internal sealed class ModelInfo { public string Family, FamilyTitle, Model, Display; }
     internal sealed class ThinkingProfile { public string Key, DefaultLevel; public string[] UiLevels, Efforts; }
     internal sealed class PendingOmpSyncInfo {
         public ModelInfo Info;
         public string Level, ConfigPath, OriginalConfigText;
         public bool HadOriginalConfig;
+    }
+    internal sealed class PollSnapshot {
+        public bool HasEngine, Serving;
+        public int EnginePid;
+        public string EngineName, LoadedModelId, RamText;
+        public int RamPct;
     }
 
     internal sealed class LogSink {
@@ -42,6 +55,641 @@ namespace StrataControllerApp {
                 if (t == null) continue;
                 int rem = (int)(end - DateTime.UtcNow).TotalMilliseconds;
                 if (rem > 0) try { t.Join(rem); } catch { }
+            }
+        }
+    }
+
+    internal sealed class UiTheme {
+        public bool IsDark;
+        public Color BgCanvas, BgCard, BgInput, BgDrop, BgDisabled, LogBg, LogFg;
+        public Color BorderCard, BorderInput;
+        public Color FgText, FgMuted, FgDim;
+        public Color Accent, AccentHover, AccentPressed;
+        public Color ColorOk, ColorWarn, ColorErr;
+        public Color BtnBg, BtnHover, BtnPressed, BtnBorder;
+        public Color Green, GreenHover, GreenPressed;
+        public Color Amber, AmberHover, AmberPressed;
+        public Color Red, RedHover, RedPressed;
+        public Color ToggleOff, ToggleKnob;
+        public Color PillNeuBg, PillNeuBd, PillNeuFg;
+        public Color PillOkBg, PillOkBd, PillOkFg;
+        public Color PillWarnBg, PillWarnBd, PillWarnFg;
+        public Color PillErrBg, PillErrBd, PillErrFg;
+
+        public static readonly UiTheme Dark = new UiTheme {
+            IsDark = true,
+            BgCanvas = Color.FromArgb(17, 18, 23), BgCard = Color.FromArgb(26, 28, 35),
+            BgInput = Color.FromArgb(19, 20, 26), BgDrop = Color.FromArgb(30, 33, 43),
+            BgDisabled = Color.FromArgb(23, 25, 32), LogBg = Color.FromArgb(16, 18, 24), LogFg = Color.FromArgb(201, 212, 227),
+            BorderCard = Color.FromArgb(44, 48, 60), BorderInput = Color.FromArgb(56, 61, 78),
+            FgText = Color.FromArgb(232, 236, 244), FgMuted = Color.FromArgb(155, 163, 184), FgDim = Color.FromArgb(104, 112, 134),
+            Accent = Color.FromArgb(88, 166, 255), AccentHover = Color.FromArgb(69, 142, 224), AccentPressed = Color.FromArgb(52, 118, 194),
+            ColorOk = Color.FromArgb(63, 185, 80), ColorWarn = Color.FromArgb(232, 179, 57), ColorErr = Color.FromArgb(242, 99, 99),
+            BtnBg = Color.FromArgb(37, 40, 52), BtnHover = Color.FromArgb(48, 53, 69), BtnPressed = Color.FromArgb(29, 32, 42), BtnBorder = Color.FromArgb(58, 64, 82),
+            Green = Color.FromArgb(35, 134, 54), GreenHover = Color.FromArgb(46, 160, 67), GreenPressed = Color.FromArgb(27, 110, 44),
+            Amber = Color.FromArgb(166, 99, 16), AmberHover = Color.FromArgb(191, 116, 21), AmberPressed = Color.FromArgb(135, 79, 11),
+            Red = Color.FromArgb(184, 50, 50), RedHover = Color.FromArgb(207, 61, 61), RedPressed = Color.FromArgb(150, 38, 38),
+            ToggleOff = Color.FromArgb(53, 58, 75), ToggleKnob = Color.FromArgb(240, 244, 250),
+            PillNeuBg = Color.FromArgb(34, 37, 49), PillNeuBd = Color.FromArgb(53, 59, 77), PillNeuFg = Color.FromArgb(180, 188, 208),
+            PillOkBg = Color.FromArgb(20, 43, 29), PillOkBd = Color.FromArgb(38, 92, 57), PillOkFg = Color.FromArgb(104, 216, 132),
+            PillWarnBg = Color.FromArgb(45, 36, 18), PillWarnBd = Color.FromArgb(99, 75, 29), PillWarnFg = Color.FromArgb(242, 196, 90),
+            PillErrBg = Color.FromArgb(48, 23, 27), PillErrBd = Color.FromArgb(107, 42, 48), PillErrFg = Color.FromArgb(245, 133, 133)
+        };
+
+        public static readonly UiTheme Light = new UiTheme {
+            IsDark = false,
+            BgCanvas = Color.FromArgb(241, 243, 248), BgCard = Color.FromArgb(255, 255, 255),
+            BgInput = Color.FromArgb(246, 247, 251), BgDrop = Color.FromArgb(255, 255, 255),
+            BgDisabled = Color.FromArgb(236, 238, 244), LogBg = Color.FromArgb(247, 248, 252), LogFg = Color.FromArgb(31, 37, 51),
+            BorderCard = Color.FromArgb(216, 220, 232), BorderInput = Color.FromArgb(196, 202, 218),
+            FgText = Color.FromArgb(24, 28, 38), FgMuted = Color.FromArgb(88, 96, 118), FgDim = Color.FromArgb(128, 136, 156),
+            Accent = Color.FromArgb(37, 116, 235), AccentHover = Color.FromArgb(28, 98, 204), AccentPressed = Color.FromArgb(22, 79, 166),
+            ColorOk = Color.FromArgb(26, 148, 72), ColorWarn = Color.FromArgb(186, 118, 12), ColorErr = Color.FromArgb(206, 46, 46),
+            BtnBg = Color.FromArgb(238, 240, 246), BtnHover = Color.FromArgb(226, 230, 240), BtnPressed = Color.FromArgb(210, 216, 230), BtnBorder = Color.FromArgb(200, 206, 221),
+            Green = Color.FromArgb(27, 138, 61), GreenHover = Color.FromArgb(22, 117, 51), GreenPressed = Color.FromArgb(17, 94, 40),
+            Amber = Color.FromArgb(184, 109, 10), AmberHover = Color.FromArgb(156, 92, 8), AmberPressed = Color.FromArgb(128, 74, 6),
+            Red = Color.FromArgb(199, 44, 44), RedHover = Color.FromArgb(173, 35, 35), RedPressed = Color.FromArgb(143, 27, 27),
+            ToggleOff = Color.FromArgb(207, 213, 227), ToggleKnob = Color.FromArgb(255, 255, 255),
+            PillNeuBg = Color.FromArgb(236, 239, 246), PillNeuBd = Color.FromArgb(200, 207, 223), PillNeuFg = Color.FromArgb(70, 78, 100),
+            PillOkBg = Color.FromArgb(232, 247, 237), PillOkBd = Color.FromArgb(156, 218, 178), PillOkFg = Color.FromArgb(20, 102, 52),
+            PillWarnBg = Color.FromArgb(254, 245, 227), PillWarnBd = Color.FromArgb(234, 200, 132), PillWarnFg = Color.FromArgb(136, 84, 10),
+            PillErrBg = Color.FromArgb(253, 236, 237), PillErrBd = Color.FromArgb(240, 178, 180), PillErrFg = Color.FromArgb(158, 34, 38)
+        };
+    }
+
+    internal static class Ui {
+        public static UiTheme T = UiTheme.Dark;
+        public static float Scale = 1f;
+        public static int S(float px) { return (int)Math.Round(px * Scale); }
+
+        [DllImport("dwmapi.dll")]
+        private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int val, int size);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, string lParam);
+
+        public static void DwmTitleBar(IntPtr hwnd, bool dark) {
+            if (hwnd == IntPtr.Zero) return;
+            try {
+                int v = dark ? 1 : 0;
+                if (DwmSetWindowAttribute(hwnd, 20, ref v, 4) != 0) DwmSetWindowAttribute(hwnd, 19, ref v, 4);
+            } catch { }
+        }
+
+        public static void SetCue(IntPtr hwnd, string cue) {
+            if (hwnd != IntPtr.Zero && !string.IsNullOrEmpty(cue)) try { SendMessage(hwnd, 0x1501, (IntPtr)1, cue); } catch { }
+        }
+
+        public static GraphicsPath RoundPath(RectangleF r, float rad) {
+            GraphicsPath p = new GraphicsPath();
+            float d = Math.Min(rad * 2f, Math.Min(r.Width, r.Height));
+            if (d <= 1f) { p.AddRectangle(r); return p; }
+            p.AddArc(r.X, r.Y, d, d, 180, 90);
+            p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+            p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+            p.CloseFigure();
+            return p;
+        }
+    }
+
+    internal sealed class CardPanel : TableLayoutPanel {
+        public bool ReadyHighlight;
+        public CardPanel() {
+            DoubleBuffered = true;
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+            BackColor = Ui.T.BgCard;
+        }
+        public void SyncTheme() { BackColor = Ui.T.BgCard; Invalidate(); }
+        protected override void OnPaintBackground(PaintEventArgs e) {
+            if (Width <= 2 || Height <= 2) return;
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (SolidBrush cb = new SolidBrush(Ui.T.BgCanvas)) e.Graphics.FillRectangle(cb, ClientRectangle);
+            RectangleF r = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+            using (GraphicsPath gp = Ui.RoundPath(r, Ui.S(8)))
+            using (SolidBrush br = new SolidBrush(Ui.T.BgCard))
+            using (Pen pen = new Pen(ReadyHighlight ? Ui.T.ColorOk : Ui.T.BorderCard, 1f)) {
+                e.Graphics.FillPath(br, gp);
+                e.Graphics.DrawPath(pen, gp);
+            }
+        }
+    }
+
+    internal sealed class InputWrap : Panel {
+        public readonly TextBox Box;
+        private readonly string cue;
+        public InputWrap(string cueText, Font font) {
+            cue = cueText;
+            DoubleBuffered = true;
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+            Box = new TextBox { BorderStyle = BorderStyle.None, Font = font, Margin = Padding.Empty };
+            Box.GotFocus += delegate { Invalidate(); };
+            Box.LostFocus += delegate { Invalidate(); };
+            Box.HandleCreated += delegate { Ui.SetCue(Box.Handle, cue); };
+            Controls.Add(Box);
+            MouseDown += delegate { Box.Focus(); };
+            SyncTheme();
+        }
+        public void SyncTheme() {
+            BackColor = Ui.T.BgCard;
+            Box.BackColor = Box.ReadOnly ? Ui.T.BgDisabled : Ui.T.BgInput;
+            Box.ForeColor = Box.ReadOnly ? Ui.T.FgDim : Ui.T.FgText;
+            Invalidate();
+        }
+        protected override void OnResize(EventArgs e) {
+            base.OnResize(e);
+            int px = Ui.S(9), bh = Box.PreferredHeight;
+            Box.SetBounds(px, Math.Max(2, (Height - bh) / 2), Math.Max(10, Width - px * 2), bh);
+        }
+        protected override void OnPaint(PaintEventArgs e) {
+            if (Width <= 2 || Height <= 2) return;
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (SolidBrush cb = new SolidBrush(Ui.T.BgCard)) e.Graphics.FillRectangle(cb, ClientRectangle);
+            RectangleF r = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+            Color fill = Box.ReadOnly ? Ui.T.BgDisabled : Ui.T.BgInput;
+            Color bd = (Box.Focused && !Box.ReadOnly) ? Ui.T.Accent : Ui.T.BorderInput;
+            using (GraphicsPath gp = Ui.RoundPath(r, Ui.S(6)))
+            using (SolidBrush br = new SolidBrush(fill))
+            using (Pen pen = new Pen(bd, 1f)) {
+                e.Graphics.FillPath(br, gp);
+                e.Graphics.DrawPath(pen, gp);
+            }
+        }
+    }
+
+    internal sealed class LogWrap : Panel {
+        public readonly TextBox Box;
+        public LogWrap(Font font) {
+            DoubleBuffered = true;
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+            Padding = new Padding(Ui.S(8), Ui.S(6), Ui.S(8), Ui.S(6));
+            Box = new TextBox {
+                Multiline = true, ReadOnly = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical,
+                Dock = DockStyle.Fill, MaxLength = int.MaxValue, Font = font, BorderStyle = BorderStyle.None
+            };
+            Controls.Add(Box);
+            SyncTheme();
+        }
+        public void SyncTheme() {
+            BackColor = Ui.T.BgCard;
+            Box.BackColor = Ui.T.LogBg;
+            Box.ForeColor = Ui.T.LogFg;
+            Invalidate();
+        }
+        protected override void OnPaint(PaintEventArgs e) {
+            if (Width <= 2 || Height <= 2) return;
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (SolidBrush cb = new SolidBrush(Ui.T.BgCard)) e.Graphics.FillRectangle(cb, ClientRectangle);
+            RectangleF r = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+            using (GraphicsPath gp = Ui.RoundPath(r, Ui.S(6)))
+            using (SolidBrush br = new SolidBrush(Ui.T.LogBg))
+            using (Pen pen = new Pen(Ui.T.BorderCard, 1f)) {
+                e.Graphics.FillPath(br, gp);
+                e.Graphics.DrawPath(pen, gp);
+            }
+        }
+    }
+
+    internal sealed class FlatDropRenderer : ToolStripRenderer {
+        protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e) {
+            using (SolidBrush b = new SolidBrush(Ui.T.BorderInput)) e.Graphics.FillRectangle(b, e.AffectedBounds);
+        }
+        protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e) { }
+    }
+
+    internal sealed class ThemedCombo : Control {
+        public readonly List<string> Items = new List<string>();
+        public readonly bool Editable;
+        public readonly TextBox EditBox;
+        public event EventHandler SelectedIndexChanged;
+
+        private readonly ToolStripDropDown drop;
+        private readonly ListBox list;
+        private int selIdx = -1, hoverIdx = -1, lastCloseTick;
+        private bool hovered, dropOpen, updating;
+
+        public ThemedCombo(bool editable, Font font) {
+            Editable = editable;
+            Font = font;
+            DoubleBuffered = true;
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
+            TabStop = !editable;
+
+            if (editable) {
+                EditBox = new TextBox { BorderStyle = BorderStyle.None, Font = font, Margin = Padding.Empty };
+                EditBox.GotFocus += delegate { Invalidate(); };
+                EditBox.LostFocus += delegate { Invalidate(); };
+                EditBox.TextChanged += delegate { OnTextChanged(EventArgs.Empty); };
+                EditBox.KeyDown += delegate(object s, KeyEventArgs e) {
+                    if (e.KeyCode == Keys.F4 || (e.Alt && e.KeyCode == Keys.Down)) { e.Handled = true; ToggleDrop(); }
+                };
+                Controls.Add(EditBox);
+            }
+
+            list = new ListBox { BorderStyle = BorderStyle.None, DrawMode = DrawMode.OwnerDrawFixed, IntegralHeight = false, Font = font };
+            list.DrawItem += OnListDrawItem;
+            list.MouseMove += delegate(object s, MouseEventArgs e) {
+                int i = list.IndexFromPoint(e.Location);
+                if (i != hoverIdx) { hoverIdx = i; list.Invalidate(); }
+            };
+            list.MouseClick += delegate(object s, MouseEventArgs e) {
+                int i = list.IndexFromPoint(e.Location);
+                if (i >= 0) CommitIndex(i);
+            };
+            list.KeyDown += delegate(object s, KeyEventArgs e) {
+                if (e.KeyCode == Keys.Enter && list.SelectedIndex >= 0) { e.Handled = true; CommitIndex(list.SelectedIndex); }
+                else if (e.KeyCode == Keys.Escape) { e.Handled = true; drop.Close(); FocusSelf(); }
+            };
+
+            ToolStripControlHost host = new ToolStripControlHost(list) { Padding = Padding.Empty, Margin = Padding.Empty, AutoSize = false };
+            drop = new ToolStripDropDown { Padding = new Padding(1), Margin = Padding.Empty, AutoSize = true, DropShadowEnabled = true, Renderer = new FlatDropRenderer() };
+            drop.Items.Add(host);
+            drop.Closed += delegate { dropOpen = false; lastCloseTick = Environment.TickCount; Invalidate(); };
+            SyncTheme();
+        }
+
+        public int SelectedIndex {
+            get { return selIdx; }
+            set {
+                int next = (value >= 0 && value < Items.Count) ? value : -1;
+                if (selIdx == next && (!Editable || (next >= 0 && EditBox.Text == Items[next]))) return;
+                selIdx = next;
+                if (Editable && selIdx >= 0) EditBox.Text = Items[selIdx];
+                if (!updating) { Invalidate(); if (SelectedIndexChanged != null) SelectedIndexChanged(this, EventArgs.Empty); }
+            }
+        }
+
+        public string SelectedItem {
+            get { return (selIdx >= 0 && selIdx < Items.Count) ? Items[selIdx] : (Editable ? EditBox.Text : null); }
+            set {
+                int idx = (value != null) ? Items.IndexOf(value) : -1;
+                if (idx >= 0) SelectedIndex = idx;
+                else if (Editable) { selIdx = -1; EditBox.Text = value ?? ""; }
+            }
+        }
+
+        public override string Text {
+            get { return Editable ? EditBox.Text : (selIdx >= 0 && selIdx < Items.Count ? Items[selIdx] : ""); }
+            set {
+                if (Editable) EditBox.Text = value ?? "";
+                else SelectedItem = value;
+            }
+        }
+
+        public void SetItems(IEnumerable<string> items, string selectItem) {
+            updating = true;
+            try {
+                Items.Clear();
+                if (items != null) Items.AddRange(items);
+                selIdx = -1;
+                if (!string.IsNullOrEmpty(selectItem)) selIdx = Items.IndexOf(selectItem);
+                if (selIdx < 0 && Items.Count > 0) selIdx = 0;
+                if (Editable && selIdx >= 0) EditBox.Text = Items[selIdx];
+            } finally { updating = false; }
+            Invalidate();
+        }
+
+        public void SyncTheme() {
+            BackColor = Ui.T.BgCard;
+            list.BackColor = Ui.T.BgDrop;
+            list.ForeColor = Ui.T.FgText;
+            if (EditBox != null) {
+                EditBox.ReadOnly = !Enabled;
+                EditBox.BackColor = Enabled ? Ui.T.BgInput : Ui.T.BgDisabled;
+                EditBox.ForeColor = Enabled ? Ui.T.FgText : Ui.T.FgDim;
+            }
+            Invalidate();
+        }
+
+        private void FocusSelf() { if (Editable) EditBox.Focus(); else Focus(); }
+
+        private void CommitIndex(int idx) {
+            drop.Close();
+            if (idx >= 0 && idx < Items.Count) {
+                bool same = (selIdx == idx);
+                selIdx = idx;
+                if (Editable) EditBox.Text = Items[idx];
+                Invalidate();
+                if (!same && SelectedIndexChanged != null) SelectedIndexChanged(this, EventArgs.Empty);
+                else if (Editable && SelectedIndexChanged != null) SelectedIndexChanged(this, EventArgs.Empty);
+            }
+            FocusSelf();
+        }
+
+        private void ToggleDrop() {
+            if (!Enabled || Items.Count == 0) return;
+            if (dropOpen) { drop.Close(); return; }
+            if (unchecked(Environment.TickCount - lastCloseTick) < 160) return;
+            list.BeginUpdate();
+            list.Items.Clear();
+            int maxW = Width;
+            foreach (string it in Items) {
+                list.Items.Add(it);
+                int w = TextRenderer.MeasureText(it, Font).Width + Ui.S(30);
+                if (w > maxW) maxW = w;
+            }
+            list.ItemHeight = Math.Max(Ui.S(26), Font.Height + Ui.S(10));
+            int vis = Math.Min(Items.Count, 8);
+            int dropW = Math.Min(Math.Max(Width, maxW), Ui.S(520));
+            list.Size = new Size(dropW - 2, vis * list.ItemHeight + 2);
+            list.SelectedIndex = (selIdx >= 0 && selIdx < list.Items.Count) ? selIdx : -1;
+            hoverIdx = list.SelectedIndex;
+            list.EndUpdate();
+            drop.Items[0].Size = list.Size;
+            dropOpen = true;
+            Invalidate();
+            drop.Show(this, new Point(0, Height + Ui.S(2)));
+            list.Focus();
+        }
+
+        private void OnListDrawItem(object sender, DrawItemEventArgs e) {
+            if (e.Index < 0 || e.Index >= list.Items.Count) return;
+            bool sel = (e.Index == hoverIdx) || ((e.State & DrawItemState.Selected) != 0 && hoverIdx < 0);
+            Color bg = sel ? Ui.T.Accent : Ui.T.BgDrop;
+            Color fg = sel ? Color.White : Ui.T.FgText;
+            using (SolidBrush br = new SolidBrush(bg)) e.Graphics.FillRectangle(br, e.Bounds);
+            Rectangle tr = new Rectangle(e.Bounds.X + Ui.S(9), e.Bounds.Y, Math.Max(1, e.Bounds.Width - Ui.S(14)), e.Bounds.Height);
+            TextRenderer.DrawText(e.Graphics, list.Items[e.Index].ToString(), Font, tr, fg, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        }
+
+        protected override void OnEnabledChanged(EventArgs e) { base.OnEnabledChanged(e); SyncTheme(); }
+        protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); hovered = true; Invalidate(); }
+        protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); hovered = false; Invalidate(); }
+        protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
+        protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
+        protected override void OnMouseDown(MouseEventArgs e) {
+            base.OnMouseDown(e);
+            if (!Enabled || e.Button != MouseButtons.Left) return;
+            if (!Editable) Focus();
+            ToggleDrop();
+        }
+        protected override bool IsInputKey(Keys keyData) {
+            Keys k = keyData & Keys.KeyCode;
+            return k == Keys.Up || k == Keys.Down || k == Keys.Home || k == Keys.End || base.IsInputKey(keyData);
+        }
+        protected override void OnKeyDown(KeyEventArgs e) {
+            base.OnKeyDown(e);
+            if (!Enabled || Editable || Items.Count == 0) return;
+            if (e.KeyCode == Keys.Space || e.KeyCode == Keys.Enter || e.KeyCode == Keys.F4 || (e.Alt && e.KeyCode == Keys.Down)) { e.Handled = true; ToggleDrop(); }
+            else if (e.KeyCode == Keys.Down && selIdx + 1 < Items.Count) { e.Handled = true; SelectedIndex = selIdx + 1; }
+            else if (e.KeyCode == Keys.Up && selIdx > 0) { e.Handled = true; SelectedIndex = selIdx - 1; }
+            else if (e.KeyCode == Keys.Home) { e.Handled = true; SelectedIndex = 0; }
+            else if (e.KeyCode == Keys.End) { e.Handled = true; SelectedIndex = Items.Count - 1; }
+        }
+        protected override void OnResize(EventArgs e) {
+            base.OnResize(e);
+            if (EditBox != null) {
+                int px = Ui.S(9), aw = Ui.S(26), bh = EditBox.PreferredHeight;
+                EditBox.SetBounds(px, Math.Max(2, (Height - bh) / 2), Math.Max(10, Width - px - aw), bh);
+            }
+        }
+        protected override void OnPaint(PaintEventArgs e) {
+            if (Width <= 2 || Height <= 2) return;
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (SolidBrush cb = new SolidBrush(Ui.T.BgCard)) e.Graphics.FillRectangle(cb, ClientRectangle);
+            RectangleF r = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+            bool foc = Focused || dropOpen || (EditBox != null && EditBox.Focused);
+            Color fill = Enabled ? Ui.T.BgInput : Ui.T.BgDisabled;
+            Color bd = (foc && Enabled) ? Ui.T.Accent : (hovered && Enabled ? Ui.T.FgDim : Ui.T.BorderInput);
+            using (GraphicsPath gp = Ui.RoundPath(r, Ui.S(6)))
+            using (SolidBrush br = new SolidBrush(fill))
+            using (Pen pen = new Pen(bd, 1f)) {
+                e.Graphics.FillPath(br, gp);
+                e.Graphics.DrawPath(pen, gp);
+            }
+            int aw = Ui.S(24);
+            if (!Editable) {
+                string txt = (selIdx >= 0 && selIdx < Items.Count) ? Items[selIdx] : "";
+                Rectangle tr = new Rectangle(Ui.S(9), 0, Math.Max(1, Width - Ui.S(11) - aw), Height);
+                TextRenderer.DrawText(e.Graphics, txt, Font, tr, Enabled ? Ui.T.FgText : Ui.T.FgDim, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            }
+            float cx = Width - aw * 0.52f, cy = Height * 0.5f, d = Ui.S(3.5f);
+            using (Pen cp = new Pen(Enabled ? Ui.T.FgMuted : Ui.T.FgDim, 1.5f) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round }) {
+                e.Graphics.DrawLines(cp, new[] { new PointF(cx - d, cy - d * 0.45f), new PointF(cx, cy + d * 0.55f), new PointF(cx + d, cy - d * 0.45f) });
+            }
+        }
+        protected override void Dispose(bool disposing) {
+            if (disposing) { drop.Dispose(); list.Dispose(); }
+            base.Dispose(disposing);
+        }
+    }
+
+    internal sealed class ToggleCheck : Control {
+        public event EventHandler CheckedChanged;
+        private bool isChecked, hovered;
+        public ToggleCheck(string text, bool initial, Font font) {
+            Text = text; isChecked = initial; Font = font;
+            DoubleBuffered = true; Cursor = Cursors.Hand; TabStop = true;
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
+        }
+        public bool Checked {
+            get { return isChecked; }
+            set { if (isChecked != value) { isChecked = value; Invalidate(); if (CheckedChanged != null) CheckedChanged(this, EventArgs.Empty); } }
+        }
+        public void SyncTheme() { BackColor = Ui.T.BgCard; Invalidate(); }
+        protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); hovered = true; Invalidate(); }
+        protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); hovered = false; Invalidate(); }
+        protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
+        protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
+        protected override void OnClick(EventArgs e) { base.OnClick(e); Focus(); Checked = !Checked; }
+        protected override void OnKeyDown(KeyEventArgs e) {
+            base.OnKeyDown(e);
+            if (e.KeyCode == Keys.Space || e.KeyCode == Keys.Enter) { e.Handled = true; Checked = !Checked; }
+        }
+        protected override void OnPaint(PaintEventArgs e) {
+            if (Width <= 2 || Height <= 2) return;
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (SolidBrush cb = new SolidBrush(Ui.T.BgCard)) e.Graphics.FillRectangle(cb, ClientRectangle);
+            int tw = Ui.S(36), th = Ui.S(20), ty = (Height - th) / 2;
+            RectangleF tr = new RectangleF(1f, ty + 0.5f, tw - 1f, th - 1f);
+            Color track = isChecked ? (hovered ? Ui.T.AccentHover : Ui.T.Accent) : Ui.T.ToggleOff;
+            using (GraphicsPath gp = Ui.RoundPath(tr, th / 2f))
+            using (SolidBrush br = new SolidBrush(track)) {
+                e.Graphics.FillPath(br, gp);
+                if (Focused) using (Pen fp = new Pen(Ui.T.Accent, 1.5f)) e.Graphics.DrawPath(fp, gp);
+            }
+            float pad = Ui.S(3), kd = th - pad * 2f;
+            float kx = isChecked ? (tr.Right - pad - kd) : (tr.X + pad);
+            using (SolidBrush kb = new SolidBrush(Ui.T.ToggleKnob)) e.Graphics.FillEllipse(kb, kx, ty + pad, kd, kd);
+            Rectangle lr = new Rectangle(tw + Ui.S(8), 0, Math.Max(1, Width - tw - Ui.S(8)), Height);
+            TextRenderer.DrawText(e.Graphics, Text, Font, lr, Ui.T.FgText, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        }
+    }
+
+    internal sealed class RoundButton : Button {
+        public BtnTone Tone;
+        private bool hovered, pressed;
+        public RoundButton(string text, BtnTone tone, Font font) {
+            Text = text; Tone = tone; Font = font;
+            FlatStyle = FlatStyle.Flat; Cursor = Cursors.Hand;
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        }
+        public void SyncTheme() { BackColor = Ui.T.BgCard; Invalidate(); }
+        protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); hovered = true; Invalidate(); }
+        protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); hovered = false; pressed = false; Invalidate(); }
+        protected override void OnMouseDown(MouseEventArgs e) { base.OnMouseDown(e); if (e.Button == MouseButtons.Left) { pressed = true; Invalidate(); } }
+        protected override void OnMouseUp(MouseEventArgs e) { base.OnMouseUp(e); pressed = false; Invalidate(); }
+        protected override void OnPaint(PaintEventArgs e) {
+            if (Width <= 2 || Height <= 2) return;
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (SolidBrush cb = new SolidBrush(Ui.T.BgCard)) e.Graphics.FillRectangle(cb, ClientRectangle);
+            Color bg, bd, fg;
+            if (!Enabled) { bg = Ui.T.BgDisabled; bd = Ui.T.BorderCard; fg = Ui.T.FgDim; }
+            else if (Tone == BtnTone.Primary) { bg = pressed ? Ui.T.GreenPressed : (hovered ? Ui.T.GreenHover : Ui.T.Green); bd = bg; fg = Color.White; }
+            else if (Tone == BtnTone.Accent)  { bg = pressed ? Ui.T.AccentPressed : (hovered ? Ui.T.AccentHover : Ui.T.Accent); bd = bg; fg = Color.White; }
+            else if (Tone == BtnTone.Warning) { bg = pressed ? Ui.T.AmberPressed : (hovered ? Ui.T.AmberHover : Ui.T.Amber); bd = bg; fg = Color.White; }
+            else if (Tone == BtnTone.Danger)  { bg = pressed ? Ui.T.RedPressed : (hovered ? Ui.T.RedHover : Ui.T.Red); bd = bg; fg = Color.White; }
+            else { bg = pressed ? Ui.T.BtnPressed : (hovered ? Ui.T.BtnHover : Ui.T.BtnBg); bd = Ui.T.BtnBorder; fg = Ui.T.FgText; }
+
+            RectangleF r = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+            using (GraphicsPath gp = Ui.RoundPath(r, Ui.S(6)))
+            using (SolidBrush br = new SolidBrush(bg))
+            using (Pen pen = new Pen(Focused && ShowFocusCues ? Ui.T.Accent : bd, Focused && ShowFocusCues ? 1.5f : 1f)) {
+                e.Graphics.FillPath(br, gp);
+                e.Graphics.DrawPath(pen, gp);
+            }
+            Rectangle tr = new Rectangle(Ui.S(6), 0, Math.Max(1, Width - Ui.S(12)), Height);
+            TextRenderer.DrawText(e.Graphics, Text, Font, tr, fg, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        }
+    }
+
+    internal sealed class StatusPill : Control {
+        public bool ShowDot;
+        private PillKind kind = PillKind.Neutral;
+        public StatusPill(string text, PillKind k, bool dot, Font font, int height) {
+            Text = text; kind = k; ShowDot = dot; Font = font; Height = height;
+            DoubleBuffered = true;
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+            RecalcWidth();
+        }
+        public void UpdatePill(string text, PillKind k) {
+            if (Text == text && kind == k) return;
+            Text = text; kind = k;
+            RecalcWidth();
+            Invalidate();
+        }
+        public void SyncTheme() { BackColor = Ui.T.BgCard; Invalidate(); }
+        private void RecalcWidth() {
+            int tw = TextRenderer.MeasureText(Text ?? "", Font).Width;
+            Width = tw + Ui.S(ShowDot ? 28 : 18);
+        }
+        protected override void OnPaint(PaintEventArgs e) {
+            if (Width <= 2 || Height <= 2) return;
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (SolidBrush cb = new SolidBrush(Ui.T.BgCard)) e.Graphics.FillRectangle(cb, ClientRectangle);
+            Color bg = Ui.T.PillNeuBg, bd = Ui.T.PillNeuBd, fg = Ui.T.PillNeuFg, dot = Ui.T.FgMuted;
+            if (kind == PillKind.Ok)        { bg = Ui.T.PillOkBg; bd = Ui.T.PillOkBd; fg = Ui.T.PillOkFg; dot = Ui.T.ColorOk; }
+            else if (kind == PillKind.Warn) { bg = Ui.T.PillWarnBg; bd = Ui.T.PillWarnBd; fg = Ui.T.PillWarnFg; dot = Ui.T.ColorWarn; }
+            else if (kind == PillKind.Err)  { bg = Ui.T.PillErrBg; bd = Ui.T.PillErrBd; fg = Ui.T.PillErrFg; dot = Ui.T.ColorErr; }
+            RectangleF r = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+            using (GraphicsPath gp = Ui.RoundPath(r, Height / 2f))
+            using (SolidBrush br = new SolidBrush(bg))
+            using (Pen pen = new Pen(bd, 1f)) {
+                e.Graphics.FillPath(br, gp);
+                e.Graphics.DrawPath(pen, gp);
+            }
+            int xOff = Ui.S(9);
+            if (ShowDot) {
+                float dd = Ui.S(6.5f);
+                using (SolidBrush db = new SolidBrush(dot)) e.Graphics.FillEllipse(db, xOff, (Height - dd) / 2f, dd, dd);
+                xOff += Ui.S(11);
+            }
+            Rectangle tr = new Rectangle(xOff, 0, Math.Max(1, Width - xOff - Ui.S(6)), Height);
+            TextRenderer.DrawText(e.Graphics, Text, Font, tr, fg, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+        }
+    }
+
+    internal sealed class StatusHeader : Control {
+        private readonly Font fontTitle, fontDetail;
+        private StatusState state = StatusState.Checking;
+        private string title = "CHECKING...", detail = "Initializing Strata controller...";
+        public StatusHeader(Font titleFont, Font detailFont) {
+            fontTitle = titleFont; fontDetail = detailFont;
+            DoubleBuffered = true;
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        }
+        public void SetState(StatusState st, string newTitle, string newDetail) {
+            if (state == st && title == newTitle && detail == newDetail) return;
+            state = st; title = newTitle; detail = newDetail;
+            Invalidate();
+        }
+        public void SyncTheme() { BackColor = Ui.T.BgCard; Invalidate(); }
+        protected override void OnPaint(PaintEventArgs e) {
+            if (Width <= 2 || Height <= 2) return;
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (SolidBrush cb = new SolidBrush(Ui.T.BgCard)) e.Graphics.FillRectangle(cb, ClientRectangle);
+            Color sc = Ui.T.FgMuted;
+            if (state == StatusState.Serving) sc = Ui.T.ColorOk;
+            else if (state == StatusState.Loading) sc = Ui.T.ColorWarn;
+            else if (state == StatusState.Stopped) sc = Ui.T.ColorErr;
+
+            float cy = Height / 2f, hr = Ui.S(7.5f), dr = Ui.S(4f), cx = hr + 1f;
+            using (SolidBrush hb = new SolidBrush(Color.FromArgb(Ui.T.IsDark ? 60 : 45, sc))) e.Graphics.FillEllipse(hb, cx - hr, cy - hr, hr * 2f, hr * 2f);
+            using (SolidBrush db = new SolidBrush(sc)) e.Graphics.FillEllipse(db, cx - dr, cy - dr, dr * 2f, dr * 2f);
+
+            int tx = (int)(cx + hr + Ui.S(7));
+            int tw = TextRenderer.MeasureText(title, fontTitle, new Size(int.MaxValue, Height), TextFormatFlags.NoPadding).Width;
+            Rectangle tr = new Rectangle(tx, 0, tw + Ui.S(4), Height);
+            TextRenderer.DrawText(e.Graphics, title, fontTitle, tr, sc, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
+
+            int dx = tr.Right + Ui.S(10);
+            if (dx < Width - Ui.S(12)) {
+                Rectangle drRect = new Rectangle(dx, 0, Width - dx, Height);
+                TextRenderer.DrawText(e.Graphics, detail, fontDetail, drRect, Ui.T.FgMuted, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            }
+        }
+    }
+
+    internal sealed class ThemeToggle : Button {
+        private bool hovered;
+        public ThemeToggle(int height) {
+            Size = new Size(Ui.S(58), height);
+            AccessibleName = "Toggle color theme";
+            FlatStyle = FlatStyle.Flat; Cursor = Cursors.Hand; TabStop = true;
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        }
+        public void SyncTheme() { BackColor = Ui.T.BgCard; Invalidate(); }
+        protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); hovered = true; Invalidate(); }
+        protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); hovered = false; Invalidate(); }
+        protected override void OnPaint(PaintEventArgs e) {
+            if (Width <= 2 || Height <= 2) return;
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (SolidBrush cb = new SolidBrush(Ui.T.BgCard)) g.FillRectangle(cb, ClientRectangle);
+            RectangleF outer = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+            using (GraphicsPath gp = Ui.RoundPath(outer, Height / 2f))
+            using (SolidBrush bg = new SolidBrush(Ui.T.BgInput))
+            using (Pen bd = new Pen(Focused && ShowFocusCues ? Ui.T.Accent : (hovered ? Ui.T.FgDim : Ui.T.BorderInput), Focused && ShowFocusCues ? 1.5f : 1f)) {
+                g.FillPath(bg, gp);
+                g.DrawPath(bd, gp);
+            }
+            float pad = Ui.S(2.5f), halfW = (Width - pad * 2f) / 2f, segH = Height - pad * 2f;
+            float actX = Ui.T.IsDark ? pad : (pad + halfW);
+            Color actBg = Ui.T.IsDark ? Ui.T.BtnHover : Ui.T.BgCard;
+            RectangleF seg = new RectangleF(actX, pad, halfW, segH);
+            using (GraphicsPath sp = Ui.RoundPath(seg, segH / 2f))
+            using (SolidBrush sb = new SolidBrush(actBg))
+            using (Pen sbd = new Pen(Ui.T.BorderCard, 1f)) {
+                g.FillPath(sb, sp);
+                g.DrawPath(sbd, sp);
+            }
+            // Left: Vector Crescent Moon
+            float mcx = pad + halfW * 0.5f, mcy = Height * 0.5f, mr = Ui.S(4.6f);
+            Color moonClr = Ui.T.IsDark ? Ui.T.Accent : Ui.T.FgDim;
+            Color moonCut = Ui.T.IsDark ? actBg : Ui.T.BgInput;
+            using (SolidBrush mb = new SolidBrush(moonClr)) g.FillEllipse(mb, mcx - mr, mcy - mr, mr * 2f, mr * 2f);
+            using (SolidBrush cut = new SolidBrush(moonCut)) g.FillEllipse(cut, mcx - mr * 0.15f, mcy - mr * 1.15f, mr * 1.8f, mr * 1.8f);
+
+            // Right: Vector Sun
+            float scx = pad + halfW * 1.5f, scy = Height * 0.5f, sr = Ui.S(2.7f), r1 = Ui.S(4.3f), r2 = Ui.S(5.9f);
+            Color sunClr = Ui.T.IsDark ? Ui.T.FgDim : Ui.T.ColorWarn;
+            using (SolidBrush sb = new SolidBrush(sunClr)) g.FillEllipse(sb, scx - sr, scy - sr, sr * 2f, sr * 2f);
+            using (Pen rp = new Pen(sunClr, Math.Max(1.1f, Ui.S(1.2f))) { StartCap = LineCap.Round, EndCap = LineCap.Round }) {
+                for (int i = 0; i < 8; i++) {
+                    double ang = i * Math.PI / 4.0;
+                    float cos = (float)Math.Cos(ang), sin = (float)Math.Sin(ang);
+                    g.DrawLine(rp, scx + cos * r1, scy + sin * r1, scx + cos * r2, scy + sin * r2);
+                }
             }
         }
     }
@@ -157,32 +805,39 @@ namespace StrataControllerApp {
             { "swift", "Qwen3.8 Swift 1.5" }, { "unsloth", "Qwen3.8 Unsloth" }, { "nvfp4", "Qwen3.8 NVFP4" }, { "qwen36", "Qwen3.6-35B-A3B" }
         };
 
-        private static readonly HttpClient LocalHttp = new HttpClient(new HttpClientHandler { UseProxy = false }) { Timeout = TimeSpan.FromMilliseconds(500) };
-        private static readonly Color BgDark = Color.FromArgb(24, 24, 28), BgPanel = Color.FromArgb(34, 34, 40), BgInput = Color.FromArgb(45, 45, 54);
-        private static readonly Color FgText = Color.FromArgb(235, 235, 240), FgMuted = Color.FromArgb(165, 165, 180);
-        private static readonly Color ColorServing = Color.FromArgb(65, 215, 95), ColorLoading = Color.FromArgb(245, 185, 45), ColorStopped = Color.FromArgb(230, 75, 75);
+        private readonly Font fontHead = new Font("Segoe UI Semibold", 8f);
+        private readonly Font fontLbl  = new Font("Segoe UI", 8.5f);
+        private readonly Font fontUI   = new Font("Segoe UI", 9.5f);
+        private readonly Font fontBold = new Font("Segoe UI Semibold", 9.5f);
+        private readonly Font fontMono = new Font("Consolas", 9f);
 
-        private readonly Font fontUI = new Font("Segoe UI", 9.5f), fontBold = new Font("Segoe UI Semibold", 9.5f);
-        private readonly Font fontStatus = new Font("Segoe UI Semibold", 11f), fontMono = new Font("Consolas", 9f);
         private readonly JavaScriptSerializer json = new JavaScriptSerializer();
         private readonly IPGlobalProperties ipProps = IPGlobalProperties.GetIPGlobalProperties();
         private readonly Microsoft.VisualBasic.Devices.ComputerInfo compInfo = new Microsoft.VisualBasic.Devices.ComputerInfo();
+        private HttpClient localHttp = new HttpClient(new HttpClientHandler { UseProxy = false }) { Timeout = TimeSpan.FromMilliseconds(500) };
+        private CancellationTokenSource closeCts = new CancellationTokenSource();
 
-        private readonly string strataLocalDir, launchDir, installDir, ompAgentDir, launchLogPath, cmdLogPath;
+        private readonly string userProfile, strataLocalDir, launchDir, installDir, ompAgentDir, launchLogPath, cmdLogPath;
         private readonly Dictionary<string, ModelInfo> modelMap = new Dictionary<string, ModelInfo>(StringComparer.OrdinalIgnoreCase);
         private readonly List<string> modelKeys = new List<string>();
-        private string initialThinking = "medium", lastThinkingKey = "", currentEngineLog = "", lastStatusText = "", lastProcInfo = "";
+        private string initialThinking = "medium", lastThinkingKey = "", currentEngineLog = "";
 
         private Icon appIcon;
         private ToolTip toolTip;
-        private Label lblStatus, lblProcInfo;
-        private ComboBox cmbModel, cmbCtx, cmbSpeed, cmbPleIo, cmbVramReserve, cmbThinking;
-        private CheckBox chkOmpContinue;
+        private TableLayoutPanel rootGrid;
+        private CardPanel cardStatus, cardControl;
+        private StatusHeader statusHeader;
+        private StatusPill pillRam, pillEndpoint;
+        private ThemeToggle themeToggle;
+        private ThemedCombo cmbModel, cmbCtx, cmbSpeed, cmbPleIo, cmbVramReserve, cmbThinking;
+        private InputWrap wrapPreset;
+        private LogWrap logWrap;
+        private ToggleCheck chkOmpContinue;
         private TextBox txtPreset, txtLog;
-        private Button btnStart, btnStop, btnForceStop, btnTune, btnWireOmp, btnRunOmp, btnOpenLog;
+        private RoundButton btnStart, btnStop, btnForceStop, btnTune, btnWireOmp, btnRunOmp, btnOpenLog;
         private System.Windows.Forms.Timer pollTimer;
 
-        private bool suppressThinkingSync, isPrompting, isPolling;
+        private bool suppressThinkingSync, isPrompting, isPolling, resourcesDisposed;
         private long engineLogPos, launchLogPos, cmdLogPos, launchStartFt, actionStartFt;
         private Process launchProc, actionProc;
         private LogSink launchSink, actionSink;
@@ -192,7 +847,11 @@ namespace StrataControllerApp {
         private int lastSyncedEnginePid = -1;
 
         public StrataControllerForm() {
-            string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            using (Graphics g = CreateGraphics()) {
+                float sc = g.DpiX / 96f;
+                Ui.Scale = (sc >= 0.75f && sc <= 4f) ? sc : 1f;
+            }
+            userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
             SetupEnvironmentPath(userProfile, localAppData, appData);
@@ -206,31 +865,21 @@ namespace StrataControllerApp {
             try { File.WriteAllText(launchLogPath, "", Program.Utf8NoBom); } catch { }
             try { File.WriteAllText(cmdLogPath, "", Program.Utf8NoBom); } catch { }
 
-            using (Process initEng = GetEngineProc()) {
-                if (initEng == null && Directory.Exists(launchDir)) {
-                    try {
-                        foreach (string f in Directory.EnumerateFiles(launchDir, "*.engine.log"))
-                            try { File.WriteAllText(f, "", Program.Utf8NoBom); } catch { }
-                    } catch { }
-                }
-            }
-
-            DiscoverReadyModels(userProfile);
             ReadInitialThinking();
             BuildUi();
             WriteGuiLog("Debug log: " + Program.DebugLogPath);
-            if (modelKeys.Count > 0) {
-                foreach (string k in modelKeys) {
-                    ModelInfo v = modelMap[k];
-                    WriteGuiLog(string.Format("Ready Model: {0} [--family {1} --model {2}]", v.FamilyTitle, v.Family, v.Model));
-                }
-            } else {
-                WriteGuiLog("WARNING: No downloaded/prepared Strata models detected. Run 'strata launch' in terminal to download one.");
-            }
             WireEvents();
             pollTimer = new System.Windows.Forms.Timer { Interval = 2000 };
             pollTimer.Tick += OnPollTimerTick;
-            pollTimer.Start();
+        }
+
+        protected override void OnHandleCreated(EventArgs e) {
+            base.OnHandleCreated(e);
+            Ui.DwmTitleBar(Handle, Ui.T.IsDark);
+        }
+
+        private static string SanitizeArg(string val) {
+            return Regex.Replace((val ?? "").Trim(), @"[\r\n""]+", "");
         }
 
         private static void SetupEnvironmentPath(string userProfile, string localAppData, string appData) {
@@ -351,13 +1000,16 @@ namespace StrataControllerApp {
             return Array.IndexOf(prof.UiLevels, mapped) >= 0 ? mapped : prof.DefaultLevel;
         }
 
-        private void AddReadyInfo(ModelInfo info) {
-            if (info != null && !modelMap.ContainsKey(info.Display)) { modelMap[info.Display] = info; modelKeys.Add(info.Display); }
-        }
+        private List<ModelInfo> DiscoverReadyModelsBackground() {
+            Dictionary<string, ModelInfo> foundMap = new Dictionary<string, ModelInfo>(StringComparer.OrdinalIgnoreCase);
+            List<ModelInfo> ordered = new List<ModelInfo>();
+            Action<ModelInfo> addInfo = delegate(ModelInfo info) {
+                if (info != null && !foundMap.ContainsKey(info.Display)) { foundMap[info.Display] = info; ordered.Add(info); }
+            };
+            Action<string, string> addMod = delegate(string mod, string fam) {
+                if (!string.IsNullOrEmpty(mod)) addInfo(ResolveModelInfo(mod, fam));
+            };
 
-        private void AddReadyModel(string mod, string fam) { if (!string.IsNullOrEmpty(mod)) AddReadyInfo(ResolveModelInfo(mod, fam)); }
-
-        private void DiscoverReadyModels(string userProfile) {
             string strataExe = FindCommandOnPath("strata");
             if (!string.IsNullOrEmpty(strataExe)) {
                 try {
@@ -373,7 +1025,8 @@ namespace StrataControllerApp {
                             int brace = cliJson.IndexOf('{'), bracket = cliJson.IndexOf('[');
                             int start = (brace >= 0 && (bracket < 0 || brace < bracket)) ? brace : bracket;
                             if (start >= 0) {
-                                object parsed = json.DeserializeObject(cliJson.Substring(start));
+                                JavaScriptSerializer bgJson = new JavaScriptSerializer();
+                                object parsed = bgJson.DeserializeObject(cliJson.Substring(start));
                                 object[] items = parsed as object[];
                                 Dictionary<string, object> root = AsDict(parsed);
                                 if (root != null) {
@@ -387,7 +1040,7 @@ namespace StrataControllerApp {
                                             string id = GetJsonStr(it, "model");
                                             if (string.IsNullOrEmpty(id)) id = GetJsonStr(it, "model_id");
                                             if (string.IsNullOrEmpty(id)) id = GetJsonStr(it, "id");
-                                            AddReadyModel(id, GetJsonStr(it, "family"));
+                                            addMod(id, GetJsonStr(it, "family"));
                                         }
                                     }
                                 }
@@ -397,6 +1050,7 @@ namespace StrataControllerApp {
                 } catch { }
             }
 
+            JavaScriptSerializer fsJson = new JavaScriptSerializer();
             HashSet<string> rootSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             List<string> dataRoots = new List<string>();
             foreach (string r in new[] {
@@ -409,7 +1063,7 @@ namespace StrataControllerApp {
             }) {
                 if (!File.Exists(cfgFile)) continue;
                 try {
-                    Dictionary<string, object> c = AsDict(json.DeserializeObject(File.ReadAllText(cfgFile, Encoding.UTF8)));
+                    Dictionary<string, object> c = AsDict(fsJson.DeserializeObject(File.ReadAllText(cfgFile, Encoding.UTF8)));
                     foreach (string key in new[] { "data_dir", "models_dir" }) {
                         string p = GetJsonStr(c, key);
                         if (!string.IsNullOrEmpty(p) && rootSet.Add(p)) dataRoots.Add(p);
@@ -425,7 +1079,7 @@ namespace StrataControllerApp {
                     foreach (string sub in Directory.EnumerateDirectories(pkDir)) {
                         bool hasFiles = false;
                         try { using (IEnumerator<string> en = Directory.EnumerateFiles(sub).GetEnumerator()) hasFiles = en.MoveNext(); } catch { }
-                        if (hasFiles) { string name = Path.GetFileName(sub); readyPacks.Add(name); AddReadyModel(name, ""); }
+                        if (hasFiles) { string name = Path.GetFileName(sub); readyPacks.Add(name); addMod(name, ""); }
                     }
                 } catch { }
             }
@@ -435,7 +1089,7 @@ namespace StrataControllerApp {
                 try {
                     foreach (string fPath in Directory.EnumerateFiles(dir, "*.json")) {
                         try {
-                            Dictionary<string, object> j = AsDict(json.DeserializeObject(File.ReadAllText(fPath, Encoding.UTF8)));
+                            Dictionary<string, object> j = AsDict(fsJson.DeserializeObject(File.ReadAllText(fPath, Encoding.UTF8)));
                             if (j == null) continue;
                             string baseName = Path.GetFileNameWithoutExtension(fPath);
                             bool packOk = false;
@@ -453,12 +1107,13 @@ namespace StrataControllerApp {
                             if (!string.IsNullOrEmpty(mName)) {
                                 ModelInfo info = ResolveModelInfo(mName, GetJsonStr(j, "family"));
                                 if (packOk || readyPacks.Contains(info.Model) || File.Exists(Path.Combine(launchDir, baseName + ".engine.log")) || PathExists(GetJsonStr(j, "model_path")))
-                                    AddReadyInfo(info);
+                                    addInfo(info);
                             }
                         } catch { }
                     }
                 } catch { }
             }
+            return ordered;
         }
 
         private void ReadInitialThinking() {
@@ -493,127 +1148,284 @@ namespace StrataControllerApp {
             }
             if (!string.IsNullOrEmpty(found)) initialThinking = found;
         }
+        
+        private CardPanel MakeCard(float[] cols, bool autoSize, Padding pad) {
+            CardPanel c = new CardPanel {
+                ColumnCount = cols.Length, Dock = autoSize ? DockStyle.Top : DockStyle.Fill, AutoSize = autoSize,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = pad
+            };
+            c.SuspendLayout();
+            foreach (float w in cols) c.ColumnStyles.Add(new ColumnStyle(w <= 0f ? SizeType.AutoSize : SizeType.Percent, Math.Max(w, 0f)));
+            return c;
+        }
+
+        private Label AddHead(CardPanel c, string title, int span) {
+            Label l = new Label {
+                Text = title, Font = fontHead, ForeColor = Ui.T.FgMuted, BackColor = Ui.T.BgCard,
+                Tag = "card-head", AutoSize = true, UseMnemonic = false, Margin = new Padding(0, 0, 0, Ui.S(7))
+            };
+            c.Controls.Add(l, 0, 0);
+            if (span > 1) c.SetColumnSpan(l, span);
+            return l;
+        }
+
+        private Label AddFieldLbl(CardPanel c, string text, int col, int row, int span, int cols, int topGap) {
+            int ml = col > 0 ? Ui.S(5) : 0, mr = (col + span < cols) ? Ui.S(5) : 0;
+            Label l = new Label {
+                Text = text, Font = fontLbl, ForeColor = Ui.T.FgMuted, BackColor = Ui.T.BgCard,
+                Tag = "card-muted", AutoSize = true, AutoEllipsis = true, UseMnemonic = false, Margin = new Padding(ml, topGap, mr, Ui.S(3))
+            };
+            c.Controls.Add(l, col, row);
+            if (span > 1) c.SetColumnSpan(l, span);
+            return l;
+        }
+
+        private void PlaceField(CardPanel c, Control ctrl, int col, int row, int span, int cols, int height) {
+            int ml = col > 0 ? Ui.S(5) : 0, mr = (col + span < cols) ? Ui.S(5) : 0;
+            ctrl.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+            if (height > 0) {
+                ctrl.Height = height;
+                ctrl.MinimumSize = new Size(0, height);
+                ctrl.MaximumSize = new Size(0, height);
+            }
+            ctrl.Margin = new Padding(ml, 0, mr, 0);
+            c.Controls.Add(ctrl, col, row);
+            if (span > 1) c.SetColumnSpan(ctrl, span);
+        }
+
+        private void SetTip(Control c, string tip) {
+            toolTip.SetToolTip(c, tip);
+            InputWrap iw = c as InputWrap;
+            if (iw != null) toolTip.SetToolTip(iw.Box, tip);
+            ThemedCombo tc = c as ThemedCombo;
+            if (tc != null && tc.EditBox != null) toolTip.SetToolTip(tc.EditBox, tip);
+        }
 
         private void BuildUi() {
             Text = "Strata Engine Controller";
             try { appIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); if (appIcon != null) Icon = appIcon; } catch { }
-            Size = new Size(920, 660);
-            MinimumSize = new Size(800, 520);
+            AutoScaleMode = AutoScaleMode.None;
+            DoubleBuffered = true;
+            Size = new Size(Ui.S(960), Ui.S(680));
+            MinimumSize = new Size(Ui.S(860), Ui.S(560));
             StartPosition = FormStartPosition.CenterScreen;
-            BackColor = BgDark;
-            ForeColor = FgText;
+            BackColor = Ui.T.BgCanvas;
+            ForeColor = Ui.T.FgText;
             Font = fontUI;
-            AutoScaleMode = AutoScaleMode.Dpi;
             toolTip = new ToolTip { AutoPopDelay = 12000, InitialDelay = 400, ReshowDelay = 200 };
+
+            int inputH = Math.Max(Ui.S(32), fontUI.Height + Ui.S(14));
+            int btnH   = Math.Max(Ui.S(34), fontBold.Height + Ui.S(16));
+            int pillH  = Math.Max(Ui.S(26), fontLbl.Height + Ui.S(10));
+            Padding cardPad = new Padding(Ui.S(15), Ui.S(12), Ui.S(15), Ui.S(12));
+
             SuspendLayout();
-
-            TableLayoutPanel statusGrid = NewGrid(44, new[] { 0f, 100f }, new[] { 100f }, BgPanel, new Padding(12, 6, 12, 6));
-            lblStatus   = AddLbl(statusGrid, "[CHECKING ENGINE...]", 0, 0, fontStatus, FgText, true);
-            lblProcInfo = AddLbl(statusGrid, "Endpoint: http://127.0.0.1:8080/v1", 1, 0, fontUI, FgMuted, false);
-            statusGrid.ResumeLayout(false);
-
-            TableLayoutPanel inputRow1 = NewGrid(58, new[] { 42f, 13f, 15f, 30f }, new[] { 42f, 58f }, BgDark, new Padding(12, 6, 12, 2));
-            AddLbl(inputRow1, "Model:", 0, 0, fontBold, FgText, false);
-            AddLbl(inputRow1, "Context:", 1, 0, fontUI, FgText, false);
-            AddLbl(inputRow1, "Speed (DS41):", 2, 0, fontUI, FgText, false);
-            AddLbl(inputRow1, "Preset (--save-preset):", 3, 0, fontUI, FgText, false);
-            cmbModel = AddCmb(inputRow1, 0, modelKeys.ToArray(), null, ComboBoxStyle.DropDownList);
-            cmbCtx   = AddCmb(inputRow1, 1, new[] { "256k", "128k", "64k", "32k", "16k", "8k" }, "256k", ComboBoxStyle.DropDown);
-            cmbSpeed = AddCmb(inputRow1, 2, new[] { "full", "faster" }, "full", ComboBoxStyle.DropDownList);
-            txtPreset = new TextBox { Dock = DockStyle.Fill, BackColor = BgInput, ForeColor = FgText, BorderStyle = BorderStyle.FixedSingle, Margin = new Padding(3, 2, 3, 2) };
-            inputRow1.Controls.Add(txtPreset, 3, 1);
-            inputRow1.ResumeLayout(false);
-
-            TableLayoutPanel inputRow2 = NewGrid(58, new[] { 18f, 22f, 24f, 36f }, new[] { 42f, 58f }, BgDark, new Padding(12, 2, 12, 4));
-            AddLbl(inputRow2, "PLE I/O:", 0, 0, fontUI, FgText, false);
-            AddLbl(inputRow2, "VRAM Reserve (MiB):", 1, 0, fontUI, FgText, false);
-            AddLbl(inputRow2, "OMP Thinking:", 2, 0, fontUI, FgText, false);
-            AddLbl(inputRow2, "OMP Launch Options:", 3, 0, fontUI, FgText, false);
-            cmbPleIo       = AddCmb(inputRow2, 0, new[] { "auto", "direct", "ram" }, "auto", ComboBoxStyle.DropDownList);
-            cmbVramReserve = AddCmb(inputRow2, 1, new[] { "auto", "1088", "1280", "1536", "2048" }, "auto", ComboBoxStyle.DropDown);
-            cmbThinking    = AddCmb(inputRow2, 2, new string[0], null, ComboBoxStyle.DropDownList);
-            chkOmpContinue = new CheckBox { Text = "Continue last session (-c)", Checked = true, Dock = DockStyle.Fill, AutoEllipsis = true, ForeColor = FgText, BackColor = BgDark, Margin = new Padding(6, 2, 3, 2) };
-            inputRow2.Controls.Add(chkOmpContinue, 3, 1);
-            inputRow2.ResumeLayout(false);
-
-            TableLayoutPanel btnGrid = NewGrid(50, new[] { 14f, 16f, 13f, 14f, 13f, 14f, 16f }, new[] { 100f }, BgDark, new Padding(12, 2, 12, 8));
-            btnStart     = AddBtn(btnGrid, "Start Engine",    0, Color.FromArgb(35, 134, 54),  fontBold);
-            btnStop      = AddBtn(btnGrid, "Stop (Graceful)", 1, Color.FromArgb(180, 105, 14), fontBold);
-            btnForceStop = AddBtn(btnGrid, "Force Stop",      2, Color.FromArgb(190, 40, 40),  fontBold);
-            btnTune      = AddBtn(btnGrid, "Tune Model",      3, Color.FromArgb(115, 75, 180), fontBold);
-            btnWireOmp   = AddBtn(btnGrid, "Sync omp",        4, Color.FromArgb(45, 105, 190), fontUI);
-            btnRunOmp    = AddBtn(btnGrid, "Launch omp",      5, BgPanel,                      fontUI);
-            btnOpenLog   = AddBtn(btnGrid, "Open Debug Log",  6, BgPanel,                      fontUI);
-            btnGrid.ResumeLayout(false);
-
-            Panel logPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(12, 4, 12, 12) };
-            Controls.Add(logPanel);
-            logPanel.BringToFront();
-            txtLog = new TextBox {
-                Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill,
-                MaxLength = int.MaxValue, Font = fontMono, BorderStyle = BorderStyle.FixedSingle,
-                BackColor = Color.FromArgb(16, 16, 20), ForeColor = Color.FromArgb(200, 215, 225)
+            rootGrid = new TableLayoutPanel {
+                Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 4, BackColor = Ui.T.BgCanvas,
+                Padding = new Padding(Ui.S(16), Ui.S(12), Ui.S(16), Ui.S(12))
             };
-            logPanel.Controls.Add(txtLog);
+            rootGrid.SuspendLayout();
+            rootGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58f));
+            rootGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42f));
+            rootGrid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            rootGrid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            rootGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+            rootGrid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            Controls.Add(rootGrid);
 
-            toolTip.SetToolTip(cmbPleIo, "direct: keeps 26.8 GiB PLE table on NVMe SSD (prevents startup/tuning RAM spikes via STRATA_PLE_AUTO_RAM=0).\nauto: lets Strata lock PLE in RAM if free RAM allows.\nram: forces PLE lock in RAM.");
-            toolTip.SetToolTip(cmbVramReserve, "MiB kept free on GPU (--vram-reserve-mib). Recommended 1280-1536 on 12 GB Windows cards to avoid WDDM paging (#2065).");
-            toolTip.SetToolTip(cmbThinking, "Updates modelRoles.default :level suffix and defaultThinkingLevel in ~/.omp/agent/config.yml without overwriting other keys.");
-            toolTip.SetToolTip(chkOmpContinue, "When unchecked (recommended), Launch omp starts a fresh session using --thinking. When checked, adds -c to resume the previous session.");
+            // Row 0: Telemetry / Status Strip
+            cardStatus = MakeCard(new[] { 100f, 0f, 0f, 0f }, true, new Padding(Ui.S(14), Ui.S(9), Ui.S(14), Ui.S(9)));
+            cardStatus.RowCount = 1;
+            cardStatus.RowStyles.Add(new RowStyle(SizeType.Absolute, pillH));
+            cardStatus.Margin = new Padding(0, 0, 0, Ui.S(10));
+            statusHeader = new StatusHeader(fontBold, fontLbl) {
+                Anchor = AnchorStyles.Left | AnchorStyles.Right, Height = pillH,
+                MinimumSize = new Size(0, pillH), MaximumSize = new Size(0, pillH),
+                Margin = new Padding(0, 0, Ui.S(10), 0)
+            };
+            pillRam      = new StatusPill("RAM --", PillKind.Neutral, false, fontLbl, pillH) { Anchor = AnchorStyles.Right, Margin = new Padding(0, 0, Ui.S(6), 0) };
+            pillEndpoint = new StatusPill("127.0.0.1:8080", PillKind.Neutral, true, fontLbl, pillH) { Anchor = AnchorStyles.Right, Margin = new Padding(0, 0, Ui.S(8), 0) };
+            themeToggle  = new ThemeToggle(pillH) { Anchor = AnchorStyles.Right, Margin = Padding.Empty };
+            cardStatus.Controls.Add(statusHeader, 0, 0);
+            cardStatus.Controls.Add(pillRam, 1, 0);
+            cardStatus.Controls.Add(pillEndpoint, 2, 0);
+            cardStatus.Controls.Add(themeToggle, 3, 0);
+            cardStatus.ResumeLayout(false);
+            rootGrid.Controls.Add(cardStatus, 0, 0);
+            rootGrid.SetColumnSpan(cardStatus, 2);
+
+            // Row 1 Left: MODEL & PRESET (58%, 3 cols: 32/38/30, mirrored 5-row rhythm)
+            CardPanel cardModel = MakeCard(new[] { 32f, 38f, 30f }, true, cardPad);
+            cardModel.RowCount = 5;
+            cardModel.Margin = new Padding(0, 0, Ui.S(6), Ui.S(10));
+            cardModel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            cardModel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            cardModel.RowStyles.Add(new RowStyle(SizeType.Absolute, inputH));
+            cardModel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            cardModel.RowStyles.Add(new RowStyle(SizeType.Absolute, inputH));
+            AddHead(cardModel, "MODEL & PRESET", 3);
+            AddFieldLbl(cardModel, "Model", 0, 1, 2, 3, 0);
+            AddFieldLbl(cardModel, "Speed (DS41)", 2, 1, 1, 3, 0);
+            cmbModel = new ThemedCombo(false, fontUI);
+            cmbSpeed = new ThemedCombo(false, fontUI);
+            cmbSpeed.SetItems(new[] { "full", "faster" }, "full");
+            PlaceField(cardModel, cmbModel, 0, 2, 2, 3, inputH);
+            PlaceField(cardModel, cmbSpeed, 2, 2, 1, 3, inputH);
+            AddFieldLbl(cardModel, "Context", 0, 3, 1, 3, Ui.S(9));
+            AddFieldLbl(cardModel, "Preset (--save-preset)", 1, 3, 2, 3, Ui.S(9));
+            cmbCtx = new ThemedCombo(true, fontUI);
+            cmbCtx.SetItems(new[] { "256k", "128k", "64k", "32k", "16k", "8k" }, "256k");
+            wrapPreset = new InputWrap("e.g. ds41-coder-256", fontUI);
+            txtPreset = wrapPreset.Box;
+            PlaceField(cardModel, cmbCtx, 0, 4, 1, 3, inputH);
+            PlaceField(cardModel, wrapPreset, 1, 4, 2, 3, inputH);
+            cardModel.ResumeLayout(false);
+            rootGrid.Controls.Add(cardModel, 0, 1);
+
+            // Row 1 Right: ENGINE & OMP (42%, 2 cols: 46/54, mirrored 5-row rhythm)
+            CardPanel cardOpts = MakeCard(new[] { 46f, 54f }, true, cardPad);
+            cardOpts.RowCount = 5;
+            cardOpts.Margin = new Padding(Ui.S(6), 0, 0, Ui.S(10));
+            cardOpts.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            cardOpts.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            cardOpts.RowStyles.Add(new RowStyle(SizeType.Absolute, inputH));
+            cardOpts.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            cardOpts.RowStyles.Add(new RowStyle(SizeType.Absolute, inputH));
+            AddHead(cardOpts, "ENGINE & OMP OPTIONS", 2);
+            AddFieldLbl(cardOpts, "PLE I/O", 0, 1, 1, 2, 0);
+            AddFieldLbl(cardOpts, "VRAM Reserve (MiB)", 1, 1, 1, 2, 0);
+            cmbPleIo = new ThemedCombo(false, fontUI);
+            cmbPleIo.SetItems(new[] { "auto", "direct", "ram" }, "auto");
+            cmbVramReserve = new ThemedCombo(true, fontUI);
+            cmbVramReserve.SetItems(new[] { "auto", "1088", "1280", "1536", "2048" }, "auto");
+            PlaceField(cardOpts, cmbPleIo, 0, 2, 1, 2, inputH);
+            PlaceField(cardOpts, cmbVramReserve, 1, 2, 1, 2, inputH);
+            AddFieldLbl(cardOpts, "OMP Thinking", 0, 3, 1, 2, Ui.S(9));
+            AddFieldLbl(cardOpts, "OMP Session", 1, 3, 1, 2, Ui.S(9));
+            cmbThinking = new ThemedCombo(false, fontUI);
+            chkOmpContinue = new ToggleCheck("Continue (-c)", true, fontUI);
+            PlaceField(cardOpts, cmbThinking, 0, 4, 1, 2, inputH);
+            PlaceField(cardOpts, chkOmpContinue, 1, 4, 1, 2, inputH);
+            cardOpts.ResumeLayout(false);
+            rootGrid.Controls.Add(cardOpts, 1, 1);
+
+            // Row 2: Flexible Log Card
+            CardPanel cardLog = MakeCard(new[] { 100f }, false, cardPad);
+            cardLog.RowCount = 2;
+            cardLog.Margin = new Padding(0, 0, 0, Ui.S(10));
+            cardLog.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            cardLog.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+            AddHead(cardLog, "ENGINE & ACTIVITY LOG", 1);
+            logWrap = new LogWrap(fontMono) { Dock = DockStyle.Fill, Margin = Padding.Empty };
+            txtLog = logWrap.Box;
+            cardLog.Controls.Add(logWrap, 0, 1);
+            cardLog.ResumeLayout(false);
+            rootGrid.Controls.Add(cardLog, 0, 2);
+            rootGrid.SetColumnSpan(cardLog, 2);
+
+            // Row 3 Left: TOOLS & OMP
+            CardPanel cardTools = MakeCard(new[] { 25f, 25f, 25f, 25f }, true, new Padding(Ui.S(15), Ui.S(11), Ui.S(15), Ui.S(11)));
+            cardTools.RowCount = 2;
+            cardTools.Margin = new Padding(0, 0, Ui.S(6), 0);
+            cardTools.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            cardTools.RowStyles.Add(new RowStyle(SizeType.Absolute, btnH));
+            AddHead(cardTools, "TOOLS & OMP", 4);
+            btnTune    = new RoundButton("Tune Model", BtnTone.Accent, fontBold);
+            btnWireOmp = new RoundButton("Sync omp",   BtnTone.Neutral, fontUI);
+            btnRunOmp  = new RoundButton("Resume omp", BtnTone.Neutral, fontUI);
+            btnOpenLog = new RoundButton("Debug Log",  BtnTone.Neutral, fontUI);
+            PlaceField(cardTools, btnTune,    0, 1, 1, 4, btnH);
+            PlaceField(cardTools, btnWireOmp, 1, 1, 1, 4, btnH);
+            PlaceField(cardTools, btnRunOmp,  2, 1, 1, 4, btnH);
+            PlaceField(cardTools, btnOpenLog, 3, 1, 1, 4, btnH);
+            cardTools.ResumeLayout(false);
+            rootGrid.Controls.Add(cardTools, 0, 3);
+
+            // Row 3 Right: ENGINE CONTROL (Primary CTA bottom-right)
+            cardControl = MakeCard(new[] { 28f, 34f, 38f }, true, new Padding(Ui.S(15), Ui.S(11), Ui.S(15), Ui.S(11)));
+            cardControl.RowCount = 2;
+            cardControl.Margin = new Padding(Ui.S(6), 0, 0, 0);
+            cardControl.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            cardControl.RowStyles.Add(new RowStyle(SizeType.Absolute, btnH));
+            AddHead(cardControl, "ENGINE CONTROL", 3);
+            btnStop      = new RoundButton("Stop",         BtnTone.Warning, fontBold);
+            btnForceStop = new RoundButton("Force Stop",   BtnTone.Danger,  fontBold);
+            btnStart     = new RoundButton("Start Engine", BtnTone.Primary, fontBold);
+            PlaceField(cardControl, btnStop,      0, 1, 1, 3, btnH);
+            PlaceField(cardControl, btnForceStop, 1, 1, 1, 3, btnH);
+            PlaceField(cardControl, btnStart,     2, 1, 1, 3, btnH);
+            cardControl.ResumeLayout(false);
+            rootGrid.Controls.Add(cardControl, 1, 3);
+
+            SetTip(cmbPleIo, "direct: keeps 26.8 GiB PLE table on NVMe SSD (prevents startup/tuning RAM spikes via STRATA_PLE_AUTO_RAM=0).\nauto: lets Strata lock PLE in RAM if free RAM allows.\nram: forces PLE lock in RAM.");
+            SetTip(cmbVramReserve, "MiB kept free on GPU (--vram-reserve-mib). Recommended 1280-1536 on 12 GB Windows cards to avoid WDDM paging (#2065).");
+            SetTip(cmbThinking, "Updates modelRoles.default :level suffix and defaultThinkingLevel in ~/.omp/agent/config.yml without overwriting other keys.");
+            SetTip(chkOmpContinue, "When unchecked (recommended), Launch omp starts a fresh session using --thinking. When checked, adds -c to resume the previous session.");
+            SetTip(btnStop, "Stop Strata engine gracefully using --stop and cleanup.");
+            SetTip(btnOpenLog, "Open full debug log file (" + Program.DebugLogPath + ").");
+            SetTip(pillEndpoint, "Local OpenAI-compatible inference endpoint: http://127.0.0.1:8080/v1");
+            SetTip(pillRam, "Host physical system memory usage.");
+            SetTip(themeToggle, "Switch to light mode");
+
+            rootGrid.ResumeLayout(false);
             ResumeLayout(true);
             SyncModelSelection();
         }
 
-        private TableLayoutPanel NewGrid(int height, float[] cols, float[] rows, Color bg, Padding pad) {
-            TableLayoutPanel g = new TableLayoutPanel { Dock = DockStyle.Top, Height = height, ColumnCount = cols.Length, RowCount = rows.Length, BackColor = bg, Padding = pad };
-            g.SuspendLayout();
-            foreach (float w in cols) g.ColumnStyles.Add(new ColumnStyle(w <= 0f ? SizeType.AutoSize : SizeType.Percent, Math.Max(w, 0f)));
-            foreach (float h in rows) g.RowStyles.Add(new RowStyle(SizeType.Percent, h));
-            Controls.Add(g);
-            g.BringToFront();
-            return g;
+        private void ApplyTheme(bool dark) {
+            Ui.T = dark ? UiTheme.Dark : UiTheme.Light;
+            if (IsHandleCreated) Ui.DwmTitleBar(Handle, Ui.T.IsDark);
+            SuspendLayout();
+            BackColor = Ui.T.BgCanvas;
+            ForeColor = Ui.T.FgText;
+            rootGrid.BackColor = Ui.T.BgCanvas;
+            ApplyThemeRecursive(rootGrid);
+            SetTip(themeToggle, Ui.T.IsDark ? "Switch to light mode" : "Switch to dark mode");
+            ResumeLayout(true);
+            Invalidate(true);
+            Update();
         }
 
-        private static Label AddLbl(TableLayoutPanel g, string text, int col, int row, Font font, Color color, bool autoSize) {
-            Label l = new Label { Text = text, Font = font, ForeColor = color, AutoSize = autoSize, AutoEllipsis = !autoSize, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(3, 0, 10, 0) };
-            g.Controls.Add(l, col, row);
-            return l;
-        }
-
-        private static ComboBox AddCmb(TableLayoutPanel g, int col, string[] items, string defaultItem, ComboBoxStyle style) {
-            ComboBox c = new ComboBox { Dock = DockStyle.Fill, BackColor = BgInput, ForeColor = FgText, FlatStyle = FlatStyle.Flat, DropDownStyle = style, DropDownWidth = 320, Margin = new Padding(3, 2, 3, 2) };
-            if (items != null && items.Length > 0) c.Items.AddRange(items);
-            if (!string.IsNullOrEmpty(defaultItem) && c.Items.Contains(defaultItem)) c.SelectedItem = defaultItem;
-            else if (c.Items.Count > 0) c.SelectedIndex = 0;
-            g.Controls.Add(c, col, 1);
-            return c;
-        }
-
-        private static Button AddBtn(TableLayoutPanel g, string text, int col, Color bg, Font font) {
-            Button b = new Button { Text = text, Font = font, Dock = DockStyle.Fill, BackColor = bg, ForeColor = FgText, FlatStyle = FlatStyle.Flat, AutoEllipsis = true, Margin = new Padding(3, 4, 3, 4) };
-            b.FlatAppearance.BorderSize = 0;
-            g.Controls.Add(b, col, 0);
-            return b;
+        private static void ApplyThemeRecursive(Control parent) {
+            foreach (Control c in parent.Controls) {
+                CardPanel cp = c as CardPanel;
+                if (cp != null) cp.SyncTheme();
+                else if (c is InputWrap) ((InputWrap)c).SyncTheme();
+                else if (c is LogWrap) ((LogWrap)c).SyncTheme();
+                else if (c is ThemedCombo) ((ThemedCombo)c).SyncTheme();
+                else if (c is ToggleCheck) ((ToggleCheck)c).SyncTheme();
+                else if (c is RoundButton) ((RoundButton)c).SyncTheme();
+                else if (c is StatusPill) ((StatusPill)c).SyncTheme();
+                else if (c is StatusHeader) ((StatusHeader)c).SyncTheme();
+                else if (c is ThemeToggle) ((ThemeToggle)c).SyncTheme();
+                else if (c is Label) {
+                    string tag = c.Tag as string;
+                    if (tag == "card-head" || tag == "card-muted") { c.ForeColor = Ui.T.FgMuted; c.BackColor = Ui.T.BgCard; }
+                    else if (tag == "card-dim") { c.ForeColor = Ui.T.FgDim; c.BackColor = Ui.T.BgCard; }
+                }
+                if (c.HasChildren && !(c is InputWrap) && !(c is LogWrap) && !(c is ThemedCombo))
+                    ApplyThemeRecursive(c);
+            }
         }
 
         private ModelInfo GetSelectedModelInfo() {
-            object item = cmbModel.SelectedItem;
+            string item = cmbModel.SelectedItem;
             ModelInfo info;
-            return (item != null && modelMap.TryGetValue(item.ToString(), out info)) ? info : null;
+            return (!string.IsNullOrEmpty(item) && modelMap.TryGetValue(item, out info)) ? info : null;
         }
 
         private void UpdateThinkingOptions(string family, string preferred) {
             ThinkingProfile prof = GetThinkingProfile(family);
-            string cur = !string.IsNullOrEmpty(preferred) ? preferred : (cmbThinking.SelectedItem != null ? cmbThinking.SelectedItem.ToString() : initialThinking);
+            string cur = !string.IsNullOrEmpty(preferred) ? preferred : (!string.IsNullOrEmpty(cmbThinking.SelectedItem) ? cmbThinking.SelectedItem : initialThinking);
             string pick = ResolveThinkingChoice(cur, prof);
             suppressThinkingSync = true;
             try {
                 if (lastThinkingKey != prof.Key || cmbThinking.Items.Count != prof.UiLevels.Length) {
-                    cmbThinking.BeginUpdate();
-                    try { cmbThinking.Items.Clear(); cmbThinking.Items.AddRange(prof.UiLevels); lastThinkingKey = prof.Key; }
-                    finally { cmbThinking.EndUpdate(); }
+                    cmbThinking.SetItems(prof.UiLevels, pick);
+                    lastThinkingKey = prof.Key;
+                } else if (cmbThinking.SelectedItem != pick) {
+                    cmbThinking.SelectedItem = pick;
                 }
-                if ((cmbThinking.SelectedItem != null ? cmbThinking.SelectedItem.ToString() : "") != pick) cmbThinking.SelectedItem = pick;
             } finally { suppressThinkingSync = false; }
         }
 
@@ -635,7 +1447,7 @@ namespace StrataControllerApp {
         private bool TryBuildEngineOptionArgs(out string optArgs, out string errorMsg) {
             StringBuilder sb = new StringBuilder();
             errorMsg = null;
-            string pleMode = cmbPleIo.SelectedItem != null ? cmbPleIo.SelectedItem.ToString() : "direct";
+            string pleMode = cmbPleIo.SelectedItem ?? "direct";
             if (string.Equals(pleMode, "direct", StringComparison.OrdinalIgnoreCase)) sb.Append(" --set STRATA_PLE_AUTO_RAM=0 --set ple-io=direct");
             else if (string.Equals(pleMode, "ram", StringComparison.OrdinalIgnoreCase)) sb.Append(" --set ple-io=ram");
 
@@ -674,34 +1486,38 @@ namespace StrataControllerApp {
             try { content = File.Exists(Program.DebugLogPath) ? File.ReadAllText(Program.DebugLogPath, Encoding.UTF8) : "(Debug log file not found)"; }
             catch (Exception ex) { content = "Could not read debug log: " + ex.Message; }
             using (Form dlg = new Form {
-                Text = "Debug Log - " + Program.DebugLogPath, Size = new Size(820, 540), StartPosition = FormStartPosition.CenterParent,
-                BackColor = BgDark, ForeColor = FgText, Font = fontUI, KeyPreview = true, Icon = appIcon
+                Text = "Debug Log - " + Program.DebugLogPath, Size = new Size(Ui.S(840), Ui.S(540)),
+                StartPosition = FormStartPosition.CenterParent, AutoScaleMode = AutoScaleMode.None,
+                BackColor = Ui.T.BgCanvas, ForeColor = Ui.T.FgText, Font = fontUI, KeyPreview = true, Icon = appIcon,
+                Padding = new Padding(Ui.S(12))
             }) {
-                TextBox box = new TextBox {
-                    Multiline = true, ReadOnly = true, WordWrap = false, ScrollBars = ScrollBars.Both, Dock = DockStyle.Fill,
-                    MaxLength = int.MaxValue, Font = fontMono, BorderStyle = BorderStyle.FixedSingle,
-                    BackColor = Color.FromArgb(16, 16, 20), ForeColor = Color.FromArgb(200, 215, 225), Text = content
-                };
-                dlg.Controls.Add(box);
+                dlg.HandleCreated += delegate { Ui.DwmTitleBar(dlg.Handle, Ui.T.IsDark); };
+                LogWrap wrap = new LogWrap(fontMono) { Dock = DockStyle.Fill };
+                wrap.Box.WordWrap = false;
+                wrap.Box.ScrollBars = ScrollBars.Both;
+                wrap.Box.Text = content;
+                dlg.Controls.Add(wrap);
                 dlg.KeyDown += delegate(object s, KeyEventArgs e) { if (e.KeyCode == Keys.Escape) dlg.Close(); };
-                dlg.Shown += delegate { box.SelectionStart = box.TextLength; box.ScrollToCaret(); };
+                dlg.Shown += delegate { wrap.Box.SelectionStart = wrap.Box.TextLength; wrap.Box.ScrollToCaret(); };
                 dlg.ShowDialog(this);
             }
         }
 
         private void WireEvents() {
+            themeToggle.Click += delegate { ApplyTheme(!Ui.T.IsDark); };
             cmbModel.SelectedIndexChanged += delegate { SyncModelSelection(); };
             cmbCtx.SelectedIndexChanged   += delegate { SyncModelSelection(); };
             cmbCtx.TextChanged            += delegate { SyncModelSelection(); };
+            chkOmpContinue.CheckedChanged += delegate { btnRunOmp.Text = chkOmpContinue.Checked ? "Resume omp" : "Launch omp"; };
             cmbThinking.SelectedIndexChanged += delegate {
-                if (!suppressThinkingSync) SyncOmpConfigFiles(GetSelectedModelInfo(), cmbThinking.SelectedItem != null ? cmbThinking.SelectedItem.ToString() : "", null);
+                if (!suppressThinkingSync) SyncOmpConfigFiles(GetSelectedModelInfo(), cmbThinking.SelectedItem ?? "", null);
             };
             btnStart.Click += delegate { InvokeStrataLaunch("", "Starting", false); };
             btnTune.Click += delegate {
                 ModelInfo sel = GetSelectedModelInfo();
-                string preset = txtPreset.Text.Trim();
+                string preset = SanitizeArg(txtPreset.Text);
                 if (sel == null || string.IsNullOrEmpty(preset)) { MessageBox.Show(this, "Select a downloaded ready model and preset name first.", "Missing Input"); return; }
-                string pleMode = cmbPleIo.SelectedItem != null ? cmbPleIo.SelectedItem.ToString() : "auto";
+                string pleMode = cmbPleIo.SelectedItem ?? "auto";
                 string vramRaw = (cmbVramReserve.Text ?? "").Trim();
                 DialogResult ans = MessageBox.Show(this,
                     string.Format("Tune [{0}] ({1}) for this PC and save to preset '{2}'?\n(PLE I/O: {3}, VRAM Reserve: {4} MiB)\nAny running engine will be stopped first.\n\nYES = Quick tune (~20 min)\nNO = Thorough tune (up to 2 hours)\nCANCEL = Abort",
@@ -714,7 +1530,7 @@ namespace StrataControllerApp {
             btnStop.Click += delegate {
                 pendingOmpSync = null; pendingActionNext = null;
                 StopTrackedProc(ref actionProc, ref actionSink, actionStartFt);
-                string p = txtPreset.Text.Trim();
+                string p = SanitizeArg(txtPreset.Text);
                 WriteGuiLog(string.Format("Stopping Strata engine gracefully (--preset \"{0}\")...", p));
                 Action runCleanupIfAlive = delegate {
                     bool alive = IsProcRunning(launchProc);
@@ -749,16 +1565,23 @@ namespace StrataControllerApp {
                 bool stoppedAny = ForceStopAllStrata(true);
                 WriteGuiLog(stoppedAny ? "Engine terminated. VRAM and System RAM freed." : "No running strata process found.");
             };
-            btnWireOmp.Click += delegate {
+            btnWireOmp.Click += async delegate {
                 pendingOmpSync = null; pendingActionNext = null;
                 StopTrackedProc(ref actionProc, ref actionSink, actionStartFt);
-                string ignored;
-                if (!ProbeLocalServer(out ignored)) {
+                btnWireOmp.Enabled = false;
+                string probeId;
+                try {
+                    probeId = await ProbeLocalServerAsync(closeCts.Token);
+                } finally {
+                    if (!IsDisposed && IsHandleCreated) btnWireOmp.Enabled = true;
+                }
+                if (IsDisposed || !IsHandleCreated) return;
+                if (probeId == null) {
                     WriteGuiLog("WARNING: Server is not responding on http://127.0.0.1:8080; start the engine before clicking 'Sync omp'.");
                     return;
                 }
                 ModelInfo sel = GetSelectedModelInfo();
-                string lvl = cmbThinking.SelectedItem != null ? cmbThinking.SelectedItem.ToString() : "";
+                string lvl = cmbThinking.SelectedItem ?? "";
                 string cfgPath = ResolveOmpFile("config");
                 bool hadCfg = File.Exists(cfgPath);
                 string origCfg = null;
@@ -775,10 +1598,10 @@ namespace StrataControllerApp {
                     return;
                 }
                 ModelInfo sel = GetSelectedModelInfo();
-                string lvl = cmbThinking.SelectedItem != null ? cmbThinking.SelectedItem.ToString() : "";
+                string lvl = cmbThinking.SelectedItem ?? "";
                 string resolvedLvl = !string.IsNullOrEmpty(lvl) ? ResolveThinkingChoice(lvl, GetThinkingProfile(sel != null ? sel.Family : "qwen")) : "";
                 SyncOmpConfigFiles(sel, resolvedLvl, null);
-                string dir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                string dir = userProfile;
                 using (FolderBrowserDialog dlg = new FolderBrowserDialog { Description = "Select workspace folder for omp (Cancel for user home):" }) {
                     if (dlg.ShowDialog(this) == DialogResult.OK) dir = dlg.SelectedPath;
                 }
@@ -792,7 +1615,7 @@ namespace StrataControllerApp {
 
         private void InvokeStrataLaunch(string extraArgs, string actionLabel, bool stopFirst) {
             ModelInfo sel = GetSelectedModelInfo();
-            string ctx = cmbCtx.Text.Trim(), preset = txtPreset.Text.Trim();
+            string ctx = SanitizeArg(cmbCtx.Text), preset = SanitizeArg(txtPreset.Text);
             if (sel == null || string.IsNullOrEmpty(ctx) || string.IsNullOrEmpty(preset)) {
                 MessageBox.Show(this, "Select a downloaded ready model, context, and preset name first.", "Missing Input");
                 return;
@@ -807,7 +1630,7 @@ namespace StrataControllerApp {
             if (File.Exists(currentEngineLog)) try { File.WriteAllText(currentEngineLog, "", Program.Utf8NoBom); } catch { }
             engineLogPos = 0;
 
-            string spdArg = (sel.Family == "deepseek41") ? " --speed \"" + cmbSpeed.Text + "\"" : "";
+            string spdArg = (sel.Family == "deepseek41") ? " --speed \"" + SanitizeArg(cmbSpeed.Text) + "\"" : "";
             string launchArgs = string.Format("launch --family \"{0}\" --model \"{1}\" --context \"{2}\"{3} --save-preset \"{4}\"{5}{6} --no-tui",
                 sel.Family, sel.Model, ctx, spdArg, preset, optArgs, extraArgs);
             WriteGuiLog(string.Format("{0} [{1}]: strata {2}", actionLabel, sel.FamilyTitle, launchArgs));
@@ -1157,29 +1980,59 @@ namespace StrataControllerApp {
             return best;
         }
 
-        private bool ProbeLocalServer(out string loadedId) {
-            loadedId = "";
+        private async Task<string> ProbeLocalServerAsync(CancellationToken ct) {
+            bool listening = await Task.Run(delegate {
+                try {
+                    foreach (IPEndPoint ep in ipProps.GetActiveTcpListeners()) if (ep.Port == 8080) return true;
+                    return false;
+                } catch { return true; }
+            });
+            if (!listening || ct.IsCancellationRequested || localHttp == null) return null;
             try {
-                bool listening = false;
-                foreach (IPEndPoint ep in ipProps.GetActiveTcpListeners()) if (ep.Port == 8080) { listening = true; break; }
-                if (!listening) return false;
-            } catch { }
-            try {
-                using (CancellationTokenSource cts = new CancellationTokenSource(500))
-                using (HttpResponseMessage resp = LocalHttp.GetAsync(LocalModelsUrl, cts.Token).ConfigureAwait(false).GetAwaiter().GetResult()) {
-                    if ((int)resp.StatusCode >= 500) return false;
-                    if (resp.IsSuccessStatusCode) {
-                        string body = resp.Content.ReadAsStringAsync().ConfigureAwait(false).GetAwaiter().GetResult();
-                        Dictionary<string, object> root = AsDict(json.DeserializeObject(body));
-                        object dataObj;
-                        if (root != null && root.TryGetValue("data", out dataObj) && dataObj is object[]) {
-                            object[] data = (object[])dataObj;
-                            if (data.Length > 0) loadedId = GetJsonStr(AsDict(data[0]), "id");
+                using (CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(ct)) {
+                    linked.CancelAfter(500);
+                    using (HttpResponseMessage resp = await localHttp.GetAsync(LocalModelsUrl, linked.Token).ConfigureAwait(false)) {
+                        if ((int)resp.StatusCode >= 500) return null;
+                        if (resp.IsSuccessStatusCode) {
+                            string body = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                            Dictionary<string, object> root = AsDict(new JavaScriptSerializer().DeserializeObject(body));
+                            object dataObj;
+                            if (root != null && root.TryGetValue("data", out dataObj) && dataObj is object[]) {
+                                object[] data = (object[])dataObj;
+                                if (data.Length > 0) return GetJsonStr(AsDict(data[0]), "id");
+                            }
                         }
+                        return "";
                     }
-                    return true;
                 }
-            } catch { return false; }
+            } catch { return null; }
+        }
+
+        private async Task<PollSnapshot> CaptureSnapshotAsync(CancellationToken ct) {
+            PollSnapshot snap = await Task.Run(delegate {
+                PollSnapshot s = new PollSnapshot { LoadedModelId = "", RamText = "RAM N/A" };
+                try {
+                    ulong total = compInfo.TotalPhysicalMemory, avail = compInfo.AvailablePhysicalMemory;
+                    if (total > 0) {
+                        ulong used = total > avail ? total - avail : 0UL;
+                        s.RamPct = (int)Math.Round(used * 100.0 / total);
+                        s.RamText = string.Format("RAM {0:0.0}/{1:0.0} GB ({2}%)", used / 1073741824.0, total / 1073741824.0, s.RamPct);
+                    }
+                } catch { }
+                using (Process eng = GetEngineProc()) {
+                    if (eng != null) {
+                        s.HasEngine = true;
+                        s.EnginePid = eng.Id;
+                        try { s.EngineName = eng.ProcessName; } catch { s.EngineName = "strata"; }
+                    }
+                }
+                return s;
+            });
+            if (snap.HasEngine && !ct.IsCancellationRequested) {
+                string loaded = await ProbeLocalServerAsync(ct);
+                if (loaded != null) { snap.Serving = true; snap.LoadedModelId = loaded; }
+            }
+            return snap;
         }
 
         private string FindModelMapKey(string loadedId) {
@@ -1194,19 +2047,12 @@ namespace StrataControllerApp {
             return "";
         }
 
-        private string GetRamText() {
-            try {
-                ulong total = compInfo.TotalPhysicalMemory, avail = compInfo.AvailablePhysicalMemory;
-                if (total > 0) {
-                    ulong used = total > avail ? total - avail : 0UL;
-                    return string.Format("{0:0.0}/{1:0.0} GB ({2}%)", used / 1073741824.0, total / 1073741824.0, (int)Math.Round(used * 100.0 / total));
-                }
-            } catch { }
-            return "N/A";
+        private async void OnPollTimerTick(object sender, EventArgs e) {
+            await PollOnceAsync();
         }
 
-        private void OnPollTimerTick(object sender, EventArgs e) {
-            if (isPolling || isPrompting) return;
+        private async Task PollOnceAsync() {
+            if (isPolling || isPrompting || IsDisposed || !IsHandleCreated) return;
             isPolling = true;
             try {
                 if (launchProc != null && !IsProcRunning(launchProc)) {
@@ -1236,8 +2082,8 @@ namespace StrataControllerApp {
                             try { File.WriteAllText(pending.ConfigPath, pending.OriginalConfigText, Program.Utf8NoBom); } catch { }
                         if (exitOk) {
                             ModelInfo syncInfo = pending.Info;
-                            string loadedId;
-                            ProbeLocalServer(out loadedId);
+                            string loadedId = await ProbeLocalServerAsync(closeCts.Token);
+                            if (IsDisposed || !IsHandleCreated) return;
                             if (!string.IsNullOrEmpty(loadedId) && loadedId != "strata") syncInfo = ResolveModelInfo(loadedId, "");
                             string modYmlId = GetModelIdFromModelsYml(ResolveOmpFile("models"), "strata");
                             string targetId = !string.IsNullOrEmpty(modYmlId) ? modYmlId : (!string.IsNullOrEmpty(loadedId) ? loadedId : "strata");
@@ -1257,41 +2103,72 @@ namespace StrataControllerApp {
 
                 if (!string.IsNullOrEmpty(currentEngineLog)) SyncLogTail(currentEngineLog, ref engineLogPos, "ENGINE_LOG", null);
 
-                string statusTxt, procTxt, loadedModelId = "";
-                Color statusClr;
-                using (Process eng = GetEngineProc()) {
-                    if (eng != null && ProbeLocalServer(out loadedModelId)) {
-                        if (lastSyncedEnginePid != eng.Id && !string.IsNullOrEmpty(loadedModelId)) {
-                            lastSyncedEnginePid = eng.Id;
-                            string matchedKey = FindModelMapKey(loadedModelId);
-                            string curSelected = cmbModel.SelectedItem != null ? cmbModel.SelectedItem.ToString() : "";
-                            if (!string.IsNullOrEmpty(matchedKey) && curSelected != matchedKey) cmbModel.SelectedItem = matchedKey;
-                            else if (loadedModelId != "strata") UpdateThinkingOptions(ResolveModelInfo(loadedModelId, "").Family, null);
-                        }
-                        statusTxt = "[SERVING - READY]";
-                        statusClr = ColorServing;
-                        procTxt = string.Format("{0}.exe (PID {1}) | RAM: {2} | http://127.0.0.1:8080/v1", eng.ProcessName, eng.Id, GetRamText());
-                    } else if (eng != null || IsProcRunning(launchProc) || pendingLaunchNext != null) {
-                        string info = (eng != null) ? string.Format("PID {0} | RAM: {1}", eng.Id, GetRamText()) : "Initializing...";
-                        statusTxt = "[LOADING MODEL...]";
-                        statusClr = ColorLoading;
-                        procTxt = "Starting engine (" + info + ")";
-                    } else {
-                        lastSyncedEnginePid = -1;
-                        statusTxt = "[STOPPED]";
-                        statusClr = ColorStopped;
-                        procTxt = "No engine process running";
+                PollSnapshot snap = await CaptureSnapshotAsync(closeCts.Token);
+                if (IsDisposed || !IsHandleCreated) return;
+
+                bool serving = snap.HasEngine && snap.Serving;
+                if (serving) {
+                    if (lastSyncedEnginePid != snap.EnginePid && !string.IsNullOrEmpty(snap.LoadedModelId)) {
+                        lastSyncedEnginePid = snap.EnginePid;
+                        string matchedKey = FindModelMapKey(snap.LoadedModelId);
+                        string curSelected = cmbModel.SelectedItem ?? "";
+                        if (!string.IsNullOrEmpty(matchedKey) && curSelected != matchedKey) cmbModel.SelectedItem = matchedKey;
+                        else if (snap.LoadedModelId != "strata") UpdateThinkingOptions(ResolveModelInfo(snap.LoadedModelId, "").Family, null);
                     }
+                    statusHeader.SetState(StatusState.Serving, "SERVING · READY", string.Format("{0}.exe (PID {1})", snap.EngineName, snap.EnginePid));
+                    pillEndpoint.UpdatePill("127.0.0.1:8080", PillKind.Ok);
+                } else if (snap.HasEngine || IsProcRunning(launchProc) || pendingLaunchNext != null) {
+                    string info = snap.HasEngine ? string.Format("PID {0}", snap.EnginePid) : "Initializing...";
+                    statusHeader.SetState(StatusState.Loading, "LOADING MODEL...", "Starting engine (" + info + ")");
+                    pillEndpoint.UpdatePill("127.0.0.1:8080", PillKind.Warn);
+                } else {
+                    lastSyncedEnginePid = -1;
+                    statusHeader.SetState(StatusState.Stopped, "STOPPED", "No engine process running");
+                    pillEndpoint.UpdatePill("127.0.0.1:8080", PillKind.Neutral);
                 }
-                if (lastStatusText != statusTxt) { lastStatusText = statusTxt; lblStatus.Text = statusTxt; lblStatus.ForeColor = statusClr; }
-                if (lastProcInfo != procTxt) { lastProcInfo = procTxt; lblProcInfo.Text = procTxt; }
+
+                pillRam.UpdatePill(snap.RamText, snap.RamPct >= 88 ? PillKind.Warn : PillKind.Neutral);
+                if (cardControl.ReadyHighlight != serving) {
+                    cardControl.ReadyHighlight = serving;
+                    cardControl.Invalidate();
+                }
             } finally { isPolling = false; }
         }
 
-        protected override void OnShown(EventArgs e) {
+        protected override async void OnShown(EventArgs e) {
             base.OnShown(e);
             Activate();
-            BeginInvoke((MethodInvoker)delegate { OnPollTimerTick(null, EventArgs.Empty); });
+            statusHeader.SetState(StatusState.Checking, "CHECKING...", "Scanning installed models & engine...");
+
+            List<ModelInfo> discovered = await Task.Run(delegate {
+                using (Process initEng = GetEngineProc()) {
+                    if (initEng == null && Directory.Exists(launchDir)) {
+                        try {
+                            foreach (string f in Directory.EnumerateFiles(launchDir, "*.engine.log"))
+                                try { File.WriteAllText(f, "", Program.Utf8NoBom); } catch { }
+                        } catch { }
+                    }
+                }
+                return DiscoverReadyModelsBackground();
+            });
+
+            if (IsDisposed || !IsHandleCreated) return;
+            modelMap.Clear();
+            modelKeys.Clear();
+            foreach (ModelInfo v in discovered) {
+                if (!modelMap.ContainsKey(v.Display)) {
+                    modelMap[v.Display] = v;
+                    modelKeys.Add(v.Display);
+                    WriteGuiLog(string.Format("Ready Model: {0} [--family {1} --model {2}]", v.FamilyTitle, v.Family, v.Model));
+                }
+            }
+            if (modelKeys.Count == 0)
+                WriteGuiLog("WARNING: No downloaded/prepared Strata models detected. Run 'strata launch' in terminal to download one.");
+
+            cmbModel.SetItems(modelKeys, modelKeys.Count > 0 ? modelKeys[0] : null);
+            SyncModelSelection();
+            await PollOnceAsync();
+            if (!IsDisposed && IsHandleCreated && pollTimer != null) pollTimer.Start();
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e) {
@@ -1310,17 +2187,28 @@ namespace StrataControllerApp {
             base.OnFormClosing(e);
         }
 
+        protected override void OnFormClosed(FormClosedEventArgs e) {
+            CleanupResources();
+            base.OnFormClosed(e);
+        }
+
+        private void CleanupResources() {
+            if (resourcesDisposed) return;
+            resourcesDisposed = true;
+            if (closeCts != null) { try { closeCts.Cancel(); closeCts.Dispose(); } catch { } closeCts = null; }
+            if (localHttp != null) { try { localHttp.Dispose(); } catch { } localHttp = null; }
+            if (launchSink != null) { launchSink.Cancelled = true; launchSink = null; }
+            if (actionSink != null) { actionSink.Cancelled = true; actionSink = null; }
+            if (pollTimer != null) { pollTimer.Stop(); pollTimer.Dispose(); pollTimer = null; }
+            if (launchProc != null) { try { launchProc.Dispose(); } catch { } launchProc = null; }
+            if (actionProc != null) { try { actionProc.Dispose(); } catch { } actionProc = null; }
+            if (toolTip != null) { toolTip.Dispose(); toolTip = null; }
+            if (appIcon != null) { appIcon.Dispose(); appIcon = null; }
+            fontHead.Dispose(); fontLbl.Dispose(); fontUI.Dispose(); fontBold.Dispose(); fontMono.Dispose();
+        }
+
         protected override void Dispose(bool disposing) {
-            if (disposing) {
-                if (launchSink != null) { launchSink.Cancelled = true; launchSink = null; }
-                if (actionSink != null) { actionSink.Cancelled = true; actionSink = null; }
-                if (pollTimer != null) { pollTimer.Stop(); pollTimer.Dispose(); pollTimer = null; }
-                if (launchProc != null) { try { launchProc.Dispose(); } catch { } launchProc = null; }
-                if (actionProc != null) { try { actionProc.Dispose(); } catch { } actionProc = null; }
-                if (toolTip != null) { toolTip.Dispose(); toolTip = null; }
-                if (appIcon != null) { appIcon.Dispose(); appIcon = null; }
-                fontUI.Dispose(); fontBold.Dispose(); fontStatus.Dispose(); fontMono.Dispose();
-            }
+            if (disposing) CleanupResources();
             base.Dispose(disposing);
         }
     }

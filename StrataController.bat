@@ -21,7 +21,7 @@ if not defined CSC if not defined DN if exist "%ProgramFiles%\dotnet\dotnet.exe"
 if not defined CSC if defined DN for %%P in ("%DN%") do for /d %%S in ("%%~dpPsdk\*") do if exist "%%~S\Roslyn\bincore\csc.dll" set "DLL=%%~S\Roslyn\bincore\csc.dll"
 if not defined CSC if not defined DLL for /d %%S in ("%ProgramFiles%\dotnet\sdk\*") do if exist "%%~S\Roslyn\bincore\csc.dll" (set "DN=%ProgramFiles%\dotnet\dotnet.exe"& set "DLL=%%~S\Roslyn\bincore\csc.dll")
 
-set ARGS=/nologo /noconfig /nostdlib+ /t:winexe /platform:x64 /optimize+ /lib:"%FX%" /out:"StrataController.exe" %RES% /r:"%FX%\mscorlib.dll" /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Net.Http.dll /r:System.Web.Extensions.dll /r:Microsoft.VisualBasic.dll "StrataController\StrataController.cs"
+set ARGS=/nologo /noconfig /nostdlib+ /t:winexe /platform:x64 /optimize+ /lib:"%FX%" /out:"StrataController\StrataController.exe" %RES% /r:"%FX%\mscorlib.dll" /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Net.Http.dll /r:System.Web.Extensions.dll /r:Microsoft.VisualBasic.dll "StrataController\StrataController.cs"
 set RARGS=/deterministic /highentropyva+ /subsystemversion:6.00 /sdkpath:"%FX%"
 
 if defined CSC (
@@ -38,7 +38,7 @@ if defined CSC (
 )
 
 if errorlevel 1 goto :fail
-if /i not "%~1"=="--no-launch" start "" "StrataController.exe"
+if /i not "%~1"=="--no-launch" start "" "StrataController\StrataController.exe"
 popd & exit /b 0
 
 :fail
