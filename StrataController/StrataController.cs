@@ -798,11 +798,13 @@ namespace StrataControllerApp {
 
     internal sealed class StrataControllerForm : Form {
         private const string LocalModelsUrl = "http://127.0.0.1:8080/v1/models";
-        private static readonly string[] EngineProcNames = { "strata-dsv41", "strata-server", "strata" };
-        private static readonly string[] StopProcNames   = { "strata-dsv41", "strata-server", "strata-vision", "strata" };
+        private static readonly string[] EngineProcNames = { "strata-hy4", "strata-dsv41", "strata-inkling", "strata-server", "strata" };
+        private static readonly string[] StopProcNames   = { "strata-hy4", "strata-dsv41", "strata-inkling", "strata-server", "strata-vision", "strata" };
         private static readonly Dictionary<string, string> FamilyTitles = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) {
-            { "deepseek41", "DeepSeek V4.1-Flash" }, { "coder", "Qwen3.8 Coder" }, { "gyro", "Qwen3.8 Gyro" },
-            { "swift", "Qwen3.8 Swift 1.5" }, { "unsloth", "Qwen3.8 Unsloth" }, { "nvfp4", "Qwen3.8 NVFP4" }, { "qwen36", "Qwen3.6-35B-A3B" }
+            { "deepseek41", "DeepSeek V4.1-Flash" }, { "hy4-flash", "Tencent Hy4-Flash" },
+            { "coder", "Qwen3.8 Coder" }, { "gyro", "Qwen3.8 Gyro" },
+            { "swift", "Qwen3.8 Swift 1.5" }, { "unsloth", "Qwen3.8 Unsloth" },
+            { "nvfp4", "Qwen3.8 NVFP4" }, { "qwen36", "Qwen3.6-35B-A3B" }
         };
 
         private readonly Font fontHead = new Font("Segoe UI Semibold", 8f);
@@ -953,11 +955,18 @@ namespace StrataControllerApp {
         private static bool GetJsonBool(Dictionary<string, object> d, string k) { object v; return d != null && d.TryGetValue(k, out v) && v is bool && (bool)v; }
 
         private static ModelInfo ResolveModelInfo(string rawModel, string rawFamily) {
-            string m = Regex.Replace(Regex.Replace((rawModel ?? "").Trim(), @"^strata-", "", RegexOptions.IgnoreCase), @"\.json$", "", RegexOptions.IgnoreCase).ToLowerInvariant();
+            string m = Regex.Replace(Regex.Replace((rawModel ?? "").Trim(), @"^strata-", "", RegexOptions.IgnoreCase), @"\.(?:json|strata)$", "", RegexOptions.IgnoreCase).ToLowerInvariant();
             string f = (rawFamily ?? "").Trim().ToLowerInvariant();
+            if (f == "hy4" || f == "hy4_flash" || f == "hy4flash" || f == "hunyuan4" || f == "tencent-hy4-flash")
+                f = "hy4-flash";
+
             Match match;
             if ((match = Regex.Match(m, @"^deepseek-v4\.1-flash-(.+)$", RegexOptions.IgnoreCase)).Success) {
                 m = match.Groups[1].Value; f = "deepseek41";
+            } else if (Regex.IsMatch(m, @"^(?:tencent[-/])?hy4(?:[-_]?flash)?(?:-strata)?$", RegexOptions.IgnoreCase)) {
+                f = "hy4-flash";
+            } else if ((match = Regex.Match(m, @"^(?:tencent[-/])?hy4(?:[-_]?flash)?[-_](.+?)(?:-strata)?$", RegexOptions.IgnoreCase)).Success) {
+                m = match.Groups[1].Value; f = "hy4-flash";
             } else if ((match = Regex.Match(m, @"^qwen3\.6-(?:35b-a3b-)?(.+)$", RegexOptions.IgnoreCase)).Success) {
                 m = match.Groups[1].Value; if (string.IsNullOrEmpty(f)) f = "qwen36";
             } else {
@@ -971,12 +980,16 @@ namespace StrataControllerApp {
             }
             if (string.IsNullOrEmpty(f)) {
                 if (Regex.IsMatch(m, @"^(ist-?a?-?das|deepseek|dsv41)|bpw$", RegexOptions.IgnoreCase)) f = "deepseek41";
+                else if (Regex.IsMatch(m, @"^(?:hy4|sq-(?:64|96|128)(?:-strata)?$)", RegexOptions.IgnoreCase)) f = "hy4-flash";
                 else if (Regex.IsMatch(m, @"^iq1_m$", RegexOptions.IgnoreCase)) f = "coder";
                 else if (Regex.IsMatch(m, @"^gyro-", RegexOptions.IgnoreCase)) f = "gyro";
                 else if (Regex.IsMatch(m, @"^nvfp4", RegexOptions.IgnoreCase)) f = "nvfp4";
                 else if (Regex.IsMatch(m, @"^(ud-|q8_0)", RegexOptions.IgnoreCase)) f = "unsloth";
                 else f = "qwen";
             }
+            if (f == "hy4-flash")
+                m = Regex.Replace(m, @"-strata$", "", RegexOptions.IgnoreCase);
+
             string fTitle;
             if (!FamilyTitles.TryGetValue(f, out fTitle)) fTitle = "Qwen3.8-Flash-Next";
             return new ModelInfo { Family = f, FamilyTitle = fTitle, Model = m, Display = string.Format("[{0}]  {1}", fTitle, m) };
@@ -985,6 +998,8 @@ namespace StrataControllerApp {
         private static ThinkingProfile GetThinkingProfile(string family) {
             if (family == "deepseek41")
                 return new ThinkingProfile { Key = "deepseek41", UiLevels = new[] { "auto", "off", "low", "medium", "high", "max" }, Efforts = new[] { "low", "medium", "high", "max" }, DefaultLevel = "high" };
+            if (family == "hy4-flash")
+                return new ThinkingProfile { Key = "hy4-flash", UiLevels = new[] { "auto", "off", "low", "medium", "high" }, Efforts = new[] { "low", "medium", "high" }, DefaultLevel = "high" };
             if (family == "qwen36")
                 return new ThinkingProfile { Key = "qwen36", UiLevels = new[] { "auto", "off", "low", "medium", "high" }, Efforts = new[] { "low", "medium", "high" }, DefaultLevel = "medium" };
             return new ThinkingProfile { Key = "qwen38", UiLevels = new[] { "auto", "off", "low", "medium", "xhigh" }, Efforts = new[] { "low", "medium", "xhigh" }, DefaultLevel = "medium" };
@@ -1079,7 +1094,14 @@ namespace StrataControllerApp {
                     foreach (string sub in Directory.EnumerateDirectories(pkDir)) {
                         bool hasFiles = false;
                         try { using (IEnumerator<string> en = Directory.EnumerateFiles(sub).GetEnumerator()) hasFiles = en.MoveNext(); } catch { }
-                        if (hasFiles) { string name = Path.GetFileName(sub); readyPacks.Add(name); addMod(name, ""); }
+                        if (hasFiles) {
+                            string name = Path.GetFileName(sub);
+                            ModelInfo packInfo = ResolveModelInfo(name, "");
+                            readyPacks.Add(name);
+                            if (packInfo != null && !string.IsNullOrEmpty(packInfo.Model))
+                                readyPacks.Add(packInfo.Family + ":" + packInfo.Model);
+                            addInfo(packInfo);
+                        }
                     }
                 } catch { }
             }
@@ -1106,7 +1128,7 @@ namespace StrataControllerApp {
                             if (string.IsNullOrEmpty(mName) && baseName.StartsWith("strata-", StringComparison.OrdinalIgnoreCase)) mName = baseName;
                             if (!string.IsNullOrEmpty(mName)) {
                                 ModelInfo info = ResolveModelInfo(mName, GetJsonStr(j, "family"));
-                                if (packOk || readyPacks.Contains(info.Model) || File.Exists(Path.Combine(launchDir, baseName + ".engine.log")) || PathExists(GetJsonStr(j, "model_path")))
+                                if (packOk || readyPacks.Contains(info.Model) || readyPacks.Contains(info.Family + ":" + info.Model) || File.Exists(Path.Combine(launchDir, baseName + ".engine.log")) || PathExists(GetJsonStr(j, "model_path")))
                                     addInfo(info);
                             }
                         } catch { }
